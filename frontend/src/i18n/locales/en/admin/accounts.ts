@@ -876,6 +876,8 @@ export default {
       mixedSchedulingHint: 'Enable to participate in Anthropic/Gemini group scheduling',
       mixedSchedulingTooltip:
         '!! WARNING !! Antigravity Claude and Anthropic Claude cannot be used in the same context. If you have both Anthropic and Antigravity accounts, enabling this option will cause frequent 400 errors. When enabled, please use the group feature to isolate Antigravity accounts from Anthropic accounts. Make sure you understand this before enabling!!',
+      mixedSchedulingOpenAITooltip:
+        'When enabled, this OpenAI account can join Anthropic/Gemini-format groups. Incoming Anthropic-protocol requests are automatically converted (Anthropic Messages ↔ OpenAI Responses/ChatCompletions) and forwarded through this account. Billing is deducted from the OpenAI platform quota. Suitable for serving Claude Code and other Anthropic-protocol clients with GPT accounts.',
       aiCreditsBalance: 'AI Credits',
       allowOverages: 'Allow Overages (AI Credits)',
       allowOveragesTooltip:

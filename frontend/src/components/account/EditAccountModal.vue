@@ -2621,7 +2621,7 @@
             <div
               class="pointer-events-none absolute left-0 top-full z-[100] mt-1.5 w-72 rounded bg-gray-900 px-3 py-2 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100 dark:bg-gray-700"
             >
-              {{ t('admin.accounts.mixedSchedulingTooltip') }}
+              {{ t('admin.accounts.mixedSchedulingOpenAITooltip') }}
               <div
                 class="absolute bottom-full left-3 border-4 border-transparent border-b-gray-900 dark:border-b-gray-700"
               ></div>
@@ -3415,7 +3415,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
       ? credentials.antigravity_project_id.trim()
       : ''
 
-  // Load mixed scheduling setting (only for antigravity accounts)
+  // Load mixed scheduling setting (antigravity/openai accounts)
   mixedScheduling.value = false
   allowOverages.value = false
 	const extra = newAccount.extra as Record<string, unknown> | undefined
