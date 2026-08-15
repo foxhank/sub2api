@@ -120,9 +120,51 @@ func (c *githubReleaseClientError) FetchChecksumFile(ctx context.Context, url st
 	return nil, c.err
 }
 
+// githubProxyPrefixes 是 GitHub 直连失败时依次尝试的公共反代列表（fork 维护）。
+// 使用方式为「前缀 + 原始 GitHub URL」；某个代理失败自动切换下一个，全部失败才返回错误。
+// 仅部分反代支持 api.github.com 代理，不支持的会返回错误响应体，JSON 解析失败后自动跳过。
+// 安全性不受影响：下载完整性仍由 SHA256 checksum 校验 + maxSize 限制兜底。
+var githubProxyPrefixes = []string{
+	"https://gh-proxy.com/",
+	"https://ghproxy.net/",
+	"https://ghfast.top/",
+	"https://github.moeyy.xyz/",
+	"https://mirror.ghproxy.com/",
+}
+
+// requestCandidates 返回直连 + 全部代理前缀的候选 URL 列表。
+func requestCandidates(rawURL string) []string {
+	candidates := make([]string, 0, len(githubProxyPrefixes)+1)
+	candidates = append(candidates, rawURL)
+	for _, prefix := range githubProxyPrefixes {
+		candidates = append(candidates, prefix+rawURL)
+	}
+	return candidates
+}
+
 func (c *githubReleaseClient) FetchLatestRelease(ctx context.Context, repo string) (*service.GitHubRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 
+	var lastErr error
+	for _, candidate := range requestCandidates(url) {
+		release, err := c.fetchLatestReleaseOnce(ctx, candidate)
+		if err == nil {
+			return release, nil
+		}
+		lastErr = err
+		slog.Warn("github release api failed, trying next mirror", "url_host", candidateHost(candidate), "error", err)
+	}
+	return nil, lastErr
+}
+
+func candidateHost(candidate string) string {
+	if u, err := url.Parse(candidate); err == nil {
+		return u.Host
+	}
+	return candidate
+}
+
+func (c *githubReleaseClient) fetchLatestReleaseOnce(ctx context.Context, url string) (*service.GitHubRelease, error) {
 	req, err := c.newAPIRequest(ctx, url)
 	if err != nil {
 		return nil, err
@@ -155,6 +197,19 @@ func (c *githubReleaseClient) FetchRecentReleases(ctx context.Context, repo stri
 	}
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=%d", repo, perPage)
 
+	var lastErr error
+	for _, candidate := range requestCandidates(url) {
+		releases, err := c.fetchRecentReleasesOnce(ctx, candidate, perPage)
+		if err == nil {
+			return releases, nil
+		}
+		lastErr = err
+		slog.Warn("github release api failed, trying next mirror", "url_host", candidateHost(candidate), "error", err)
+	}
+	return nil, lastErr
+}
+
+func (c *githubReleaseClient) fetchRecentReleasesOnce(ctx context.Context, url string, perPage int) ([]*service.GitHubRelease, error) {
 	req, err := c.newAPIRequest(ctx, url)
 	if err != nil {
 		return nil, err
@@ -178,7 +233,21 @@ func (c *githubReleaseClient) FetchRecentReleases(ctx context.Context, repo stri
 	return releases, nil
 }
 
-func (c *githubReleaseClient) DownloadFile(ctx context.Context, url, dest string, maxSize int64) error {
+// DownloadFile 下载文件：先直连 GitHub，失败后按序尝试公共反代，全部失败返回最后一次错误。
+func (c *githubReleaseClient) DownloadFile(ctx context.Context, rawURL, dest string, maxSize int64) error {
+	var lastErr error
+	for _, candidate := range requestCandidates(rawURL) {
+		if err := c.downloadFileOnce(ctx, candidate, dest, maxSize); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			slog.Warn("github asset download failed, trying next mirror", "url_host", candidateHost(candidate), "error", err)
+		}
+	}
+	return lastErr
+}
+
+func (c *githubReleaseClient) downloadFileOnce(ctx context.Context, url, dest string, maxSize int64) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -226,7 +295,21 @@ func (c *githubReleaseClient) DownloadFile(ctx context.Context, url, dest string
 	return nil
 }
 
-func (c *githubReleaseClient) FetchChecksumFile(ctx context.Context, url string) ([]byte, error) {
+// FetchChecksumFile 获取 checksums 文件：直连失败后按序尝试公共反代。
+func (c *githubReleaseClient) FetchChecksumFile(ctx context.Context, rawURL string) ([]byte, error) {
+	var lastErr error
+	for _, candidate := range requestCandidates(rawURL) {
+		data, err := c.fetchChecksumFileOnce(ctx, candidate)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		slog.Warn("github checksum fetch failed, trying next mirror", "url_host", candidateHost(candidate), "error", err)
+	}
+	return nil, lastErr
+}
+
+func (c *githubReleaseClient) fetchChecksumFileOnce(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

@@ -32,6 +32,16 @@ NC='\033[0m' # No Color
 
 # Configuration
 GITHUB_REPO="foxhank/sub2api"
+
+# GitHub 公共反代列表（fork 维护）：直连失败时按序尝试，全部失败才报错。
+# 仅用于匿名请求；UPDATE_GITHUB_TOKEN 绝不会发送给反代。
+GITHUB_MIRRORS=(
+    "https://gh-proxy.com/"
+    "https://ghproxy.net/"
+    "https://ghfast.top/"
+    "https://github.moeyy.xyz/"
+    "https://mirror.ghproxy.com/"
+)
 INSTALL_DIR="/opt/sub2api"
 SERVICE_NAME="sub2api"
 SERVICE_USER="sub2api"
@@ -528,10 +538,79 @@ github_api_curl() {
     fi
 }
 
+# 获取包含 "tag_name" 的 GitHub API JSON 响应体：直连失败后按序尝试公共反代。
+# 反代请求保持匿名（不携带 Authorization），token 只发给 api.github.com。
+github_api_fetch_tag() {
+    local api_url="$1"
+    local body
+
+    # 1) 直连（可能带鉴权）
+    body=$(github_api_curl -s --connect-timeout 10 --max-time 30 "$api_url" 2>/dev/null)
+    if [ -n "$body" ] && printf '%s' "$body" | grep -q '"tag_name"'; then
+        printf '%s\n' "$body"
+        return 0
+    fi
+
+    # 2) 公共反代（匿名；仅部分反代支持 api.github.com，失败的自动跳过）
+    local mirror
+    for mirror in "${GITHUB_MIRRORS[@]}"; do
+        body=$(UPDATE_GITHUB_TOKEN= GITHUB_TOKEN= GH_TOKEN= curl -q --globoff -s --connect-timeout 10 --max-time 30 "${mirror}${api_url}" 2>/dev/null)
+        if [ -n "$body" ] && printf '%s' "$body" | grep -q '"tag_name"'; then
+            printf '%s\n' "$body"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 探测 GitHub API 的 HTTP 状态码：网络层失败（空/非数字）时按序尝试反代；
+# 拿到数字状态码（如 404 表示版本确实不存在）则直接返回，不再重试。
+github_api_probe() {
+    local api_url="$1"
+    local code
+
+    code=$(github_api_curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "$api_url" 2>/dev/null)
+    if [ -n "$code" ] && [[ "$code" =~ ^[0-9]+$ ]]; then
+        echo "$code"
+        return 0
+    fi
+
+    local mirror
+    for mirror in "${GITHUB_MIRRORS[@]}"; do
+        code=$(UPDATE_GITHUB_TOKEN= GITHUB_TOKEN= GH_TOKEN= curl -q --globoff -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "${mirror}${api_url}" 2>/dev/null)
+        if [ -n "$code" ] && [[ "$code" =~ ^[0-9]+$ ]]; then
+            echo "$code"
+            return 0
+        fi
+    done
+    echo "$code"
+    return 1
+}
+
+# 下载 GitHub release 资产：直连失败后按序尝试公共反代，全部失败返回非零。
+# 使用 -f 让 HTTP 4xx/5xx 视为失败（避免把 404 HTML 错误页当成文件）。
+github_download() {
+    local url="$1" dest="$2" max_time="${3:-900}"
+
+    if curl -fsL --connect-timeout 10 --max-time "$max_time" "$url" -o "$dest" 2>/dev/null && [ -s "$dest" ]; then
+        return 0
+    fi
+
+    local mirror
+    for mirror in "${GITHUB_MIRRORS[@]}"; do
+        rm -f "$dest"
+        if curl -fsL --connect-timeout 10 --max-time "$max_time" "${mirror}${url}" -o "$dest" 2>/dev/null && [ -s "$dest" ]; then
+            return 0
+        fi
+    done
+    rm -f "$dest"
+    return 1
+}
+
 # Get latest release version
 get_latest_version() {
     print_info "$(msg 'fetching_version')"
-    LATEST_VERSION=$(github_api_curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    LATEST_VERSION=$(github_api_fetch_tag "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
 
     if [ -z "$LATEST_VERSION" ]; then
         print_error "$(msg 'failed_get_version')"
@@ -547,7 +626,7 @@ list_versions() {
     print_info "$(msg 'fetching_versions')"
 
     local versions
-    versions=$(github_api_curl -s --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -20)
+    versions=$(github_api_fetch_tag "https://api.github.com/repos/${GITHUB_REPO}/releases" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' | head -20)
 
     if [ -z "$versions" ]; then
         print_error "$(msg 'failed_get_version')"
@@ -584,7 +663,7 @@ validate_version() {
 
     # Check if the release exists
     local http_code
-    http_code=$(github_api_curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${version}" 2>/dev/null)
+    http_code=$(github_api_probe "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${version}" 2>/dev/null)
 
     # Check for network errors (empty or non-numeric response)
     if [ -z "$http_code" ] || ! [[ "$http_code" =~ ^[0-9]+$ ]]; then
@@ -626,15 +705,15 @@ download_and_extract() {
     TEMP_DIR=$(mktemp -d)
     trap "rm -rf $TEMP_DIR" EXIT
 
-    # Download archive
-    if ! curl -sL "$download_url" -o "$TEMP_DIR/$archive_name"; then
+    # Download archive (direct GitHub first, then public mirrors)
+    if ! github_download "$download_url" "$TEMP_DIR/$archive_name"; then
         print_error "$(msg 'download_failed')"
         exit 1
     fi
 
     # Download and verify checksum
     print_info "$(msg 'verifying_checksum')"
-    if curl -sL "$checksum_url" -o "$TEMP_DIR/checksums.txt" 2>/dev/null; then
+    if github_download "$checksum_url" "$TEMP_DIR/checksums.txt" 30; then
         local expected_checksum=$(grep "$archive_name" "$TEMP_DIR/checksums.txt" | awk '{print $1}')
         local actual_checksum=$(sha256sum "$TEMP_DIR/$archive_name" | awk '{print $1}')
 
