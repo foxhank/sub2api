@@ -2610,7 +2610,7 @@ func (h *GatewayHandler) forwardAsOpenAICompatInAnthropicGroup(
 				return true
 			}
 			if failoverErr.ShouldReportAccountScheduleFailure() {
-				h.openAIGatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), false, nil)
+				h.openAIGatewayService.ReportOpenAIAccountScheduleResult(account, account.GetMappedModel(reqModel), false, nil)
 			}
 			if !failoverErr.ShouldRetryNextAccount() {
 				h.handleFailoverExhausted(c, failoverErr, account.Platform, streamStarted)
@@ -2645,9 +2645,9 @@ func (h *GatewayHandler) forwardAsOpenAICompatInAnthropicGroup(
 	}
 
 	if result != nil {
-		h.openAIGatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), true, result.FirstTokenMs)
+		h.openAIGatewayService.ReportOpenAIAccountScheduleResult(account, account.GetMappedModel(reqModel), true, result.FirstTokenMs)
 	} else {
-		h.openAIGatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), true, nil)
+		h.openAIGatewayService.ReportOpenAIAccountScheduleResult(account, account.GetMappedModel(reqModel), true, nil)
 	}
 
 	// 绑定粘性会话（与 anthropic 透传成功路径一致）
