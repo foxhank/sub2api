@@ -1,0 +1,100 @@
+name: Sync Upstream
+
+# fork 自动同步上游：
+# - 定时检测上游 Wei-Shaw/sub2api 的 VERSION，若有新版本则 merge 并打 tag 触发 Release 编译
+# - 版本号规则：X.Y.Z.0（前三段跟随上游，第四段为 fork 修订号，手动魔改时自行 +1）
+on:
+  schedule:
+    - cron: '23 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: Wei-Shaw/sub2api
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check upstream version
+        id: check
+        run: |
+          set -euo pipefail
+          UPSTREAM_VER=$(curl -fsSL "https://raw.githubusercontent.com/${UPSTREAM_REPO}/${UPSTREAM_BRANCH}/backend/cmd/server/VERSION" | tr -d '[:space:]')
+          LOCAL_VER=$(tr -d '[:space:]' < backend/cmd/server/VERSION)
+          LOCAL_UP3=$(echo "$LOCAL_VER" | cut -d. -f1-3)
+          echo "upstream=$UPSTREAM_VER local=$LOCAL_VER (local upstream parts: $LOCAL_UP3)"
+
+          # 仅当前三段落后于上游时同步（本地超前或相等都跳过）
+          NEWEST=$(printf '%s\n%s\n' "$LOCAL_UP3" "$UPSTREAM_VER" | sort -V | tail -n1)
+          if [ "$NEWEST" != "$UPSTREAM_VER" ] || [ "$LOCAL_UP3" = "$UPSTREAM_VER" ]; then
+            echo "No upstream update (local=$LOCAL_VER upstream=$UPSTREAM_VER), skipping."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          {
+            echo "skip=false"
+            echo "upstream_ver=$UPSTREAM_VER"
+            echo "new_ver=${UPSTREAM_VER}.0"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream
+        if: steps.check.outputs.skip == 'false'
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream "${UPSTREAM_BRANCH}"
+          if ! git merge "upstream/${UPSTREAM_BRANCH}" --no-edit; then
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+
+      - name: Create issue on merge conflict
+        if: steps.check.outputs.skip == 'false' && steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --title "⚠️ 上游同步冲突：${{ steps.check.outputs.upstream_ver }}" \
+            --body "自动同步上游 ${{ env.UPSTREAM_REPO }} @ ${{ steps.check.outputs.upstream_ver }} 时发生合并冲突，需要手动处理：
+          \`\`\`bash
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream ${{ env.UPSTREAM_BRANCH }}
+          git merge upstream/${{ env.UPSTREAM_BRANCH }}
+          # 解决冲突后：
+          echo \"${{ steps.check.outputs.new_ver }}\" > backend/cmd/server/VERSION
+          git commit
+          git tag v${{ steps.check.outputs.new_ver }}
+          git push origin main --tags
+          \`\`\`"
+          exit 1
+
+      - name: Set version and tag
+        if: steps.check.outputs.skip == 'false' && steps.merge.outputs.conflict == 'false'
+        run: |
+          set -euo pipefail
+          echo "${{ steps.check.outputs.new_ver }}" > backend/cmd/server/VERSION
+          git add backend/cmd/server/VERSION
+          # merge 可能没有实际变更（仅 VERSION 差异时允许空树处理）
+          git diff --cached --quiet || git commit -m "chore: sync upstream ${{ steps.check.outputs.upstream_ver }}, version ${{ steps.check.outputs.new_ver }} [skip ci]"
+          git tag -a "v${{ steps.check.outputs.new_ver }}" -m "Sync upstream ${{ steps.check.outputs.upstream_ver }}"
+          git push origin main
+          git push origin "v${{ steps.check.outputs.new_ver }}"

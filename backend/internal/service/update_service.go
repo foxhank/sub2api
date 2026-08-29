@@ -638,11 +638,12 @@ func (s *UpdateService) saveToCache(ctx context.Context, info *UpdateInfo) {
 }
 
 // compareVersions compares two semantic versions
+// 支持 4 段版本号（fork 专用，如 0.1.183.2：前三段跟随上游，第四段为 fork 修订号）
 func compareVersions(current, latest string) int {
 	currentParts := parseVersion(current)
 	latestParts := parseVersion(latest)
 
-	for i := 0; i < 3; i++ {
+	for i := 0; i < len(currentParts); i++ {
 		if currentParts[i] < latestParts[i] {
 			return -1
 		}
@@ -653,11 +654,11 @@ func compareVersions(current, latest string) int {
 	return 0
 }
 
-func parseVersion(v string) [3]int {
+func parseVersion(v string) [4]int {
 	v = strings.TrimPrefix(v, "v")
 	parts := strings.Split(v, ".")
-	result := [3]int{0, 0, 0}
-	for i := 0; i < len(parts) && i < 3; i++ {
+	result := [4]int{0, 0, 0, 0}
+	for i := 0; i < len(parts) && i < 4; i++ {
 		if parsed, err := strconv.Atoi(parts[i]); err == nil {
 			result[i] = parsed
 		}
