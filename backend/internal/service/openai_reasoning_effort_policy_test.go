@@ -45,9 +45,7 @@ func TestNormalizeMaxReasoningEffort(t *testing.T) {
 		{name: "empty", in: "", want: ""},
 		{name: "separator", in: "x-high", want: "xhigh"},
 		{name: "max is distinct", in: "max", want: "max"},
-		{name: "none is the lowest codex tier", in: "none", want: "none"},
-		{name: "claude ultracode alias folds to max", in: "ultracode", want: "max"},
-		{name: "ultracode alias case/separator insensitive", in: "Ultra_Code", want: "max"},
+		{name: "none is unsupported", in: "none", want: ""},
 		{name: "invalid", in: "banana", want: ""},
 	}
 	for _, tt := range tests {
@@ -85,15 +83,14 @@ func TestNormalizeReasoningEffortMappings(t *testing.T) {
 		require.ErrorContains(t, err, "duplicate")
 	})
 
-	t.Run("rejects mappings for unsupported platforms", func(t *testing.T) {
-		for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok} {
+	t.Run("rejects mappings for non OpenAI platforms", func(t *testing.T) {
+		for _, platform := range []string{PlatformAnthropic, PlatformGemini, PlatformAntigravity, PlatformGrok} {
 			_, err := NormalizeReasoningEffortMappings(platform, []ReasoningEffortMapping{{From: "low", To: "high"}})
-			require.ErrorContains(t, err, "only supported for platforms")
+			require.ErrorContains(t, err, "only supported for platforms \"openai\" and \"composite\"")
 		}
 
 		_, err := NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "none", To: "low"}})
-		// none 能被识别为档位，但不允许作为映射源/目标。
-		require.ErrorContains(t, err, "not supported")
+		require.ErrorContains(t, err, "empty or unknown")
 
 		_, err = NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "ultra", To: "high"}})
 		require.ErrorContains(t, err, "empty or unknown")
@@ -108,13 +105,9 @@ func TestNormalizeMaxReasoningEffortForPlatform(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "max", value)
 
-	value, err = normalizeMaxReasoningEffortForPlatform(PlatformAnthropic, "low")
-	require.NoError(t, err)
-	require.Equal(t, "low", value)
-
-	for _, platform := range []string{PlatformGemini, PlatformAntigravity, PlatformGrok} {
+	for _, platform := range []string{PlatformAnthropic, PlatformGemini, PlatformAntigravity, PlatformGrok} {
 		_, err = normalizeMaxReasoningEffortForPlatform(platform, "low")
-		require.ErrorContains(t, err, "only supported for platforms")
+		require.ErrorContains(t, err, "only supported for platforms \"openai\" and \"composite\"")
 	}
 
 	_, err = normalizeMaxReasoningEffortForPlatform(PlatformOpenAI, "none")
@@ -157,8 +150,7 @@ func TestApplyOpenAIReasoningEffortPolicy(t *testing.T) {
 		{name: "caps both shapes", body: `{"reasoning":{"effort":"high"},"reasoning_effort":"xhigh"}`, max: "low", path: "reasoning.effort", want: "low", changed: true},
 		{name: "maps before cap", body: `{"reasoning":{"effort":"MAX"}}`, max: "medium", mappings: []ReasoningEffortMapping{{From: "max", To: "xhigh"}}, path: "reasoning.effort", want: "medium", changed: true},
 		{name: "does not chain mappings", body: `{"reasoning_effort":"max"}`, mappings: []ReasoningEffortMapping{{From: "max", To: "xhigh"}, {From: "xhigh", To: "low"}}, path: "reasoning_effort", want: "xhigh", changed: true},
-		{name: "caps unknown tier to ceiling", body: `{"reasoning_effort":"future"}`, max: "low", path: "reasoning_effort", want: "low", changed: true},
-		{name: "keeps unknown without ceiling", body: `{"reasoning_effort":"future"}`, max: "", path: "reasoning_effort", want: "future", changed: false},
+		{name: "keeps unknown without mapping", body: `{"reasoning_effort":"future"}`, max: "low", path: "reasoning_effort", want: "future", changed: false},
 		{name: "keeps non string value", body: `{"reasoning_effort":{"level":"high"}}`, max: "low", path: "reasoning_effort.level", want: "high", changed: false},
 	}
 	for _, tt := range tests {
@@ -170,48 +162,4 @@ func TestApplyOpenAIReasoningEffortPolicy(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestApplyOpenAIReasoningEffortPolicyUnknownTiers(t *testing.T) {
-	t.Run("ultracode capped to configured ceiling", func(t *testing.T) {
-		bodies := map[string]string{
-			"reasoning.effort": `{"model":"x","reasoning":{"effort":"ultracode"}}`,
-			"reasoning_effort": `{"model":"x","reasoning_effort":"ultracode"}`,
-		}
-		for path, body := range bodies {
-			capped, changed := ApplyOpenAIReasoningEffortPolicy([]byte(body), "high", nil)
-			require.True(t, changed, path)
-			require.Equal(t, "high", gjson.GetBytes(capped, path).String(), path)
-		}
-	})
-
-	t.Run("unrecognized future tier capped when ceiling configured", func(t *testing.T) {
-		body := []byte(`{"reasoning":{"effort":"hyper-max-plus"}}`)
-		capped, changed := ApplyOpenAIReasoningEffortPolicy(body, "high", nil)
-		require.True(t, changed)
-		require.Equal(t, "high", gjson.GetBytes(capped, "reasoning.effort").String())
-	})
-
-	t.Run("unrecognized tier passthrough without ceiling", func(t *testing.T) {
-		body := []byte(`{"reasoning":{"effort":"hyper-max-plus"}}`)
-		capped, changed := ApplyOpenAIReasoningEffortPolicy(body, "", nil)
-		require.False(t, changed)
-		require.Equal(t, "hyper-max-plus", gjson.GetBytes(capped, "reasoning.effort").String())
-	})
-
-	t.Run("recognized tier within ceiling untouched", func(t *testing.T) {
-		body := []byte(`{"reasoning":{"effort":"high"}}`)
-		capped, changed := ApplyOpenAIReasoningEffortPolicy(body, "high", nil)
-		require.False(t, changed)
-		require.Equal(t, "high", gjson.GetBytes(capped, "reasoning.effort").String())
-	})
-
-	t.Run("none tier never raised by ceiling", func(t *testing.T) {
-		for _, path := range []string{"reasoning.effort", "reasoning_effort"} {
-			body := map[string]string{"reasoning.effort": `{"reasoning":{"effort":"none"}}`, "reasoning_effort": `{"reasoning_effort":"none"}`}[path]
-			capped, changed := ApplyOpenAIReasoningEffortPolicy([]byte(body), "high", nil)
-			require.False(t, changed, path)
-			require.Equal(t, "none", gjson.GetBytes(capped, path).String(), path)
-		}
-	})
 }

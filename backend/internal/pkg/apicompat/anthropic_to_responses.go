@@ -425,17 +425,15 @@ func extractAnthropicTextFromBlocks(blocks []AnthropicContentBlock) string {
 // OpenAI Responses API effort levels.
 //
 // Both APIs default to "high". The mapping is 1:1 for shared levels;
-// Anthropic's "max" (Opus 4.6 exclusive) and Claude Code's "ultracode" tier map
-// to OpenAI's "xhigh" (GPT-5.2+ exclusive) as both represent the highest
-// reasoning tier.
+// only Anthropic's "max" (Opus 4.6 exclusive) maps to OpenAI's "xhigh"
+// (GPT-5.2+ exclusive) as both represent the highest reasoning tier.
 //
-//	low       → low
-//	medium    → medium
-//	high      → high
-//	max       → xhigh
-//	ultracode → xhigh
+//	low    → low
+//	medium → medium
+//	high   → high
+//	max    → xhigh
 func mapAnthropicEffortToResponses(effort string) string {
-	if effort == "max" || effort == "ultracode" {
+	if effort == "max" {
 		return "xhigh"
 	}
 	return effort // low→low, medium→medium, high→high, unknown→passthrough
