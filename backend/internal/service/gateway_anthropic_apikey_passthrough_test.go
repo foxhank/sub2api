@@ -190,6 +190,121 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
 }
 
+// 场景（OpenCode 线上故障回归）：anthropic 分组里的 OpenAI 格式账号没有
+// count_tokens 端点，转发只会拿到上游 404 HTML。网关应返回语义化 404 让客户端
+// 本地估算，且不作为错误（nil）记录。
+func TestGatewayService_ForwardCountTokens_NonAnthropicUpstreamReturnsSemantic404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, platform := range []string{PlatformOpenAI, PlatformGrok, PlatformGemini} {
+		t.Run(platform, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+
+			body := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hello"}]}`)
+			parsed := &ParsedRequest{
+				Body:  NewRequestBodyRef(body),
+				Model: "claude-opus-5",
+			}
+
+			upstream := &anthropicHTTPUpstreamRecorder{
+				resp: &http.Response{
+					StatusCode: http.StatusInternalServerError,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{}`)),
+				},
+			}
+			cfg := &config.Config{
+				Gateway: config.GatewayConfig{
+					MaxLineSize: defaultMaxLineSize,
+				},
+			}
+			svc := &GatewayService{
+				cfg:                  cfg,
+				responseHeaderFilter: compileResponseHeaderFilter(cfg),
+				httpUpstream:         upstream,
+				rateLimitService:     &RateLimitService{},
+			}
+
+			account := &Account{
+				ID:          103,
+				Name:        "opencode-count-tokens",
+				Platform:    platform,
+				Type:        AccountTypeAPIKey,
+				Concurrency: 1,
+				Credentials: map[string]any{
+					"api_key":  "upstream-key",
+					"base_url": "https://upstream.example",
+				},
+				Status:      StatusActive,
+				Schedulable: true,
+			}
+
+			err := svc.ForwardCountTokens(context.Background(), c, account, parsed)
+			require.NoError(t, err, "不应作为网关错误记录")
+			require.Nil(t, upstream.lastReq, "不应向上游发起转发")
+			require.Equal(t, http.StatusNotFound, rec.Code)
+			require.Equal(t, "not_found_error", gjson.Get(rec.Body.String(), "error.type").String())
+			require.Contains(t, gjson.Get(rec.Body.String(), "error.message").String(), "count_tokens")
+		})
+	}
+}
+
+// 对照：anthropic 平台账号仍然正常转发 count_tokens。
+func TestGatewayService_ForwardCountTokens_AnthropicUpstreamStillForwards(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+
+	body := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hello"}]}`)
+	parsed := &ParsedRequest{
+		Body:  NewRequestBodyRef(body),
+		Model: "claude-opus-5",
+	}
+
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"input_tokens":7}`)),
+		},
+	}
+	cfg := &config.Config{
+		Gateway: config.GatewayConfig{
+			MaxLineSize: defaultMaxLineSize,
+		},
+	}
+	svc := &GatewayService{
+		cfg:                  cfg,
+		responseHeaderFilter: compileResponseHeaderFilter(cfg),
+		httpUpstream:         upstream,
+		rateLimitService:     &RateLimitService{},
+	}
+
+	account := &Account{
+		ID:          104,
+		Name:        "zhipu-anthropic-count",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "upstream-key",
+			"base_url": "https://upstream.example",
+		},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	err := svc.ForwardCountTokens(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.NotNil(t, upstream.lastReq, "anthropic 上游应正常转发")
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, int64(7), gjson.Get(rec.Body.String(), "input_tokens").Int())
+}
+
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

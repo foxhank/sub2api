@@ -149,6 +149,24 @@
                 </button>
               </div>
 
+              <!-- 更新请求被网关掐断，后台仍在执行，轮询状态中 -->
+              <div v-else-if="updateBackgroundPolling" class="space-y-2">
+                <div
+                  class="flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800/50 dark:bg-amber-900/20"
+                >
+                  <div
+                    class="flex h-8 w-8 flex-shrink-0 animate-pulse items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/50"
+                  >
+                    <Icon name="refresh" size="sm" :stroke-width="2" class="text-amber-600 dark:text-amber-400" />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <p class="text-sm font-medium text-amber-700 dark:text-amber-300">
+                      {{ t('version.updateBackground') }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
               <!-- Priority 2: Update success - need restart -->
               <div v-else-if="updateSuccess && needRestart" class="space-y-2">
                 <div
@@ -645,6 +663,7 @@ import {
   performUpdate,
   restartService,
   getRollbackVersions,
+  getUpdateStatus,
   rollback as rollbackAPI,
   type RollbackVersionInfo
 } from '@/api/admin/system'
@@ -682,6 +701,7 @@ const updating = ref(false)
 const restarting = ref(false)
 const needRestart = ref(false)
 const updateError = ref('')
+const updateBackgroundPolling = ref(false)
 const updateSuccess = ref(false)
 const restartCountdown = ref(0)
 // Distinguishes the success + restart panel between update and rollback flows
@@ -744,6 +764,7 @@ async function refreshVersion(force = true) {
 
   // Reset update states when refreshing
   updateError.value = ''
+  updateBackgroundPolling.value = false
   updateSuccess.value = false
   needRestart.value = false
   resetRollbackState()
@@ -751,11 +772,46 @@ async function refreshVersion(force = true) {
   await appStore.fetchVersion(force)
 }
 
+// 反向代理通常在 30-60s 掐断更新请求返回 504（后端已解除请求 context 绑定，
+// 更新实际在后台继续）。这类传输层中断不能当成失败，改为轮询后台真实状态。
+function isGatewayAbortError(error: unknown): boolean {
+  const err = error as {
+    response?: { status?: number; data?: { message?: string } }
+    code?: string
+  }
+  // 后端返回了结构化错误（如已最新、校验失败），按真实失败处理
+  if (err.response?.data?.message) return false
+  if (err.response && [502, 503, 504].includes(err.response.status ?? 0)) return true
+  return !err.response || err.code === 'ECONNABORTED'
+}
+
+const UPDATE_STATUS_POLL_INTERVAL_MS = 5000
+const UPDATE_STATUS_POLL_MAX_MS = 15 * 60 * 1000
+
+async function pollUpdateStatus(): Promise<void> {
+  const deadline = Date.now() + UPDATE_STATUS_POLL_MAX_MS
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, UPDATE_STATUS_POLL_INTERVAL_MS))
+    let status
+    try {
+      status = await getUpdateStatus()
+    } catch {
+      continue // 状态查询本身失败：继续轮询，不打断等待
+    }
+    if (status.status === 'success') return
+    if (status.status === 'failed') {
+      throw new Error(status.message || t('version.updateFailed'))
+    }
+  }
+  throw new Error(t('version.updateStatusTimeout'))
+}
+
 async function handleUpdate() {
   if (updating.value) return
 
   updating.value = true
   updateError.value = ''
+  updateBackgroundPolling.value = false
   updateSuccess.value = false
 
   try {
@@ -766,8 +822,25 @@ async function handleUpdate() {
     // Clear version cache to reflect update completed
     appStore.clearVersionCache()
   } catch (error: unknown) {
-    const err = error as { response?: { data?: { message?: string } }; message?: string }
-    updateError.value = err.response?.data?.message || err.message || t('version.updateFailed')
+    if (isGatewayAbortError(error)) {
+      // 请求被网关掐断，但更新在后台继续运行 —— 轮询真实状态而不是报错
+      updateBackgroundPolling.value = true
+      try {
+        await pollUpdateStatus()
+        successKind.value = 'update'
+        updateSuccess.value = true
+        needRestart.value = true
+        appStore.clearVersionCache()
+      } catch (pollError: unknown) {
+        updateError.value =
+          (pollError as { message?: string })?.message || t('version.updateFailed')
+      } finally {
+        updateBackgroundPolling.value = false
+      }
+    } else {
+      const err = error as { response?: { data?: { message?: string } }; message?: string }
+      updateError.value = err.response?.data?.message || err.message || t('version.updateFailed')
+    }
   } finally {
     updating.value = false
   }

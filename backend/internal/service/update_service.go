@@ -49,7 +49,29 @@ const (
 type UpdateCache interface {
 	GetUpdateInfo(ctx context.Context) (string, error)
 	SetUpdateInfo(ctx context.Context, data string, ttl time.Duration) error
+	GetUpdateStatus(ctx context.Context) (string, error)
+	SetUpdateStatus(ctx context.Context, data string, ttl time.Duration) error
 }
+
+// UpdateStatus describes the state of the most recent update attempt.
+// 反向代理通常在 30-60s 就掐断更新请求（#4504），更新实际在后台继续运行；
+// 前端据此轮询真实进度，而不是把代理超时当成失败。
+type UpdateStatus struct {
+	Status    string `json:"status"` // "running" | "success" | "failed"
+	Version   string `json:"version,omitempty"`
+	Message   string `json:"message,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+const (
+	UpdateStatusRunning = "running"
+	UpdateStatusSuccess = "success"
+	UpdateStatusFailed  = "failed"
+
+	updateStatusCacheKey   = "update_status"
+	updateStatusRunningTTL = 30 * time.Minute
+	updateStatusResultTTL  = time.Hour
+)
 
 // GitHubReleaseClient 获取 GitHub release 信息的接口
 type GitHubReleaseClient interface {
@@ -129,6 +151,34 @@ type GitHubAsset struct {
 	Size               int64  `json:"size"`
 }
 
+// markUpdateStatus persists the current update attempt state (best-effort:
+// a cache failure must not break the update itself).
+func (s *UpdateService) markUpdateStatus(ctx context.Context, status UpdateStatus) {
+	data, err := json.Marshal(status)
+	if err != nil {
+		return
+	}
+	ttl := updateStatusResultTTL
+	if status.Status == UpdateStatusRunning {
+		ttl = updateStatusRunningTTL
+	}
+	_ = s.cache.SetUpdateStatus(ctx, string(data), ttl)
+}
+
+// GetUpdateStatus returns the state of the most recent update attempt, or
+// nil when no attempt has been recorded (cache unavailable counts as idle).
+func (s *UpdateService) GetUpdateStatus(ctx context.Context) (*UpdateStatus, error) {
+	data, err := s.cache.GetUpdateStatus(ctx)
+	if err != nil || strings.TrimSpace(data) == "" {
+		return nil, err
+	}
+	var status UpdateStatus
+	if err := json.Unmarshal([]byte(data), &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
 // CheckUpdate checks for available updates
 func (s *UpdateService) CheckUpdate(ctx context.Context, force bool) (*UpdateInfo, error) {
 	// Try cache first
@@ -172,7 +222,13 @@ func (s *UpdateService) PerformUpdate(ctx context.Context) error {
 		return ErrNoUpdateAvailable
 	}
 
-	return s.applyReleaseAssets(ctx, info.ReleaseInfo.Assets)
+	s.markUpdateStatus(ctx, UpdateStatus{Status: UpdateStatusRunning, Version: info.LatestVersion, UpdatedAt: time.Now().Format(time.RFC3339)})
+	if err := s.applyReleaseAssets(ctx, info.ReleaseInfo.Assets); err != nil {
+		s.markUpdateStatus(ctx, UpdateStatus{Status: UpdateStatusFailed, Version: info.LatestVersion, Message: err.Error(), UpdatedAt: time.Now().Format(time.RFC3339)})
+		return err
+	}
+	s.markUpdateStatus(ctx, UpdateStatus{Status: UpdateStatusSuccess, Version: info.LatestVersion, UpdatedAt: time.Now().Format(time.RFC3339)})
+	return nil
 }
 
 // applyReleaseAssets downloads the platform archive from the given release assets,

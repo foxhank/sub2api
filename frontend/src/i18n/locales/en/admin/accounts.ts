@@ -588,6 +588,10 @@ export default {
         responsesModeForceChatCompletions: 'Force Chat Completions',
         responsesModeTextDisabledHint:
           'Not applicable when the Responses / Chat Completions endpoint is not enabled.',
+        effortCeiling: 'Reasoning effort ceiling',
+        effortCeilingDesc:
+          'Requests routed to this account are clamped down to this tier when they exceed it (e.g. ultracode/max is downgraded). User-facing behavior is unaffected. For upstreams that do not support the extended tiers; leave empty for no limit.',
+        effortCeilingUnlimited: 'Unlimited',
         endpointCapabilities: 'Endpoint capabilities',
         endpointCapabilitiesDesc:
           'Used by account routing. The text endpoint follows the Responses API support setting above and is shown as Responses, Chat Completions, or auto mode; Embeddings independently controls /v1/embeddings.',

@@ -66,6 +66,10 @@ func (s *systemHandlerUpdateServiceStub) RollbackToVersion(ctx context.Context, 
 	return s.rollbackToErr
 }
 
+func (s *systemHandlerUpdateServiceStub) GetUpdateStatus(context.Context) (*service.UpdateStatus, error) {
+	return nil, nil
+}
+
 type systemUpdateResponseEnvelope struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`

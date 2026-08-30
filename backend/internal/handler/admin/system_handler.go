@@ -49,6 +49,7 @@ type systemUpdateService interface {
 	Rollback() error
 	ListRollbackVersions(ctx context.Context) ([]service.RollbackVersion, error)
 	RollbackToVersion(ctx context.Context, version string) error
+	GetUpdateStatus(ctx context.Context) (*service.UpdateStatus, error)
 }
 
 // NewSystemHandler creates a new SystemHandler
@@ -66,6 +67,22 @@ func (h *SystemHandler) GetVersion(c *gin.Context) {
 	response.Success(c, gin.H{
 		"version": info.CurrentVersion,
 	})
+}
+
+// GetUpdateStatus returns the state of the most recent update attempt.
+// GET /api/v1/admin/system/update-status
+// 反代掐断更新请求（504）后，前端轮询此端点获取后台真实进度。
+func (h *SystemHandler) GetUpdateStatus(c *gin.Context) {
+	status, err := h.updateSvc.GetUpdateStatus(c.Request.Context())
+	if err != nil {
+		response.Error(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if status == nil {
+		response.Success(c, gin.H{"status": "idle"})
+		return
+	}
+	response.Success(c, status)
 }
 
 // CheckUpdates checks for available updates

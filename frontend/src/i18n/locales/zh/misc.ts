@@ -35,6 +35,8 @@ export default {
     updating: '正在更新...',
     updateComplete: '更新完成',
     updateFailed: '更新失败',
+    updateBackground: '更新请求被网关中断（504），更新仍在后台继续进行，正在等待结果...',
+    updateStatusTimeout: '等待后台更新超时，请稍后刷新版本状态确认结果',
     restartRequired: '请重启服务以应用更新',
     restartNow: '立即重启',
     restarting: '正在重启...',

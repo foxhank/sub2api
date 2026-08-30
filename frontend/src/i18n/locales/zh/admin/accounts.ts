@@ -669,6 +669,10 @@ export default {
         responsesModeForceResponses: '强制 Responses',
         responsesModeForceChatCompletions: '强制 Chat Completions',
         responsesModeTextDisabledHint: '未启用 Responses / Chat Completions 端点时，此设置不适用。',
+        effortCeiling: '思考强度上限',
+        effortCeilingDesc:
+          '调度到该账号的请求，超过此档位的思考强度将被降档转发（如用户传入 ultracode/max 会降为该值），用户侧无感。适用于不支持扩展档位的上游；留空表示不限制。',
+        effortCeilingUnlimited: '不限制',
         endpointCapabilities: '端点能力',
         endpointCapabilitiesDesc:
           '用于调度筛选。文本端点会跟随上方 Responses API 支持显示为 Responses、Chat Completions 或自动模式；Embeddings 独立控制 /v1/embeddings。',

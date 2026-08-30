@@ -35,6 +35,8 @@ export default {
     updating: 'Updating...',
     updateComplete: 'Update Complete',
     updateFailed: 'Update Failed',
+    updateBackground: 'The update request was cut off by the gateway (504), but the update is still running in the background. Waiting for the result...',
+    updateStatusTimeout: 'Timed out waiting for the background update. Refresh the version status later to confirm the result.',
     restartRequired: 'Please restart the service to apply the update',
     restartNow: 'Restart Now',
     restarting: 'Restarting...',

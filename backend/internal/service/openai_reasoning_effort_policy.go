@@ -32,6 +32,9 @@ func NormalizeMaxReasoningEffort(raw string) string {
 	switch value {
 	case "":
 		return ""
+	case "none":
+		// Codex 目录中的最低档：低于 minimal，透传即可，永远不该被 ceiling 抬升。
+		return "none"
 	case "minimal":
 		return "minimal"
 	case "low":
@@ -42,7 +45,8 @@ func NormalizeMaxReasoningEffort(raw string) string {
 		return "high"
 	case "xhigh", "extrahigh":
 		return "xhigh"
-	case "max":
+	case "max", "ultracode":
+		// Claude Code 的 ultracode 顶级档位折叠进 max 槽位；未来新档名只需在此加别名。
 		return "max"
 	default:
 		return ""
@@ -86,6 +90,8 @@ func normalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error
 
 func reasoningEffortRank(raw string) (int, bool) {
 	switch NormalizeMaxReasoningEffort(raw) {
+	case "none":
+		return 0, true
 	case "minimal":
 		return 1, true
 	case "low":
@@ -194,6 +200,31 @@ func ApplyOpenAIReasoningEffortPolicyFromContext(ctx context.Context, body []byt
 	return ApplyOpenAIReasoningEffortPolicy(body, policy.maxEffort, policy.mappings)
 }
 
+// clampReasoningEffortForAccount caps a single effort value to the account's
+// per-account ceiling (extra.max_reasoning_effort). Values above the ceiling and
+// unrecognized tier strings are clamped down; "none" (rank 0) and tiers within
+// the ceiling pass through unchanged. 共享分组中不支持扩展档位的账号配置上限后，
+// 用户请求里的 ultracode/max 会在转发到该账号时降档，其余账号不受影响。
+func clampReasoningEffortForAccount(effort string, account *Account) string {
+	if account == nil || effort == "" {
+		return effort
+	}
+	ceiling := account.GetMaxReasoningEffort()
+	maxRank, hasMax := reasoningEffortRank(ceiling)
+	hasMax = hasMax && maxRank > 0
+	if !hasMax {
+		return effort
+	}
+	if currentRank, recognized := reasoningEffortRank(effort); recognized {
+		if currentRank > maxRank {
+			return NormalizeMaxReasoningEffort(ceiling)
+		}
+		return effort
+	}
+	// 不认识的未来档位同样不允许越过 ceiling。
+	return NormalizeMaxReasoningEffort(ceiling)
+}
+
 func mapReasoningEffort(raw string, mappings []ReasoningEffortMapping) (string, bool) {
 	value := strings.TrimSpace(raw)
 	canonical := NormalizeMaxReasoningEffort(value)
@@ -226,6 +257,8 @@ func sanitizeGroupReasoningEffortPolicy(group *Group) {
 // stay in control.
 func ApplyOpenAIReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping) ([]byte, bool) {
 	maxRank, hasMax := reasoningEffortRank(maxEffort)
+	// 遗留数据里 ceiling 可能存着 "none"（历史上表示不设限），rank 0 不能当作有效上限。
+	hasMax = hasMax && maxRank > 0
 	if len(body) == 0 || (!hasMax && len(mappings) == 0) {
 		return body, false
 	}
