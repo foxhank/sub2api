@@ -266,6 +266,20 @@ func TestAnthropicToChatCompletionsRequest_ReasoningEffortMapping(t *testing.T) 
 	require.Equal(t, "xhigh", out.ReasoningEffort)
 }
 
+func TestAnthropicToChatCompletionsRequest_ReasoningEffortUltracode(t *testing.T) {
+	// Claude Code 的 ultracode 顶级档位等价 max，映射为 OpenAI xhigh。
+	req := &AnthropicRequest{
+		Model:        "gpt-5.4",
+		MaxTokens:    100,
+		OutputConfig: &AnthropicOutputConfig{Effort: "ultracode"},
+		Messages:     []AnthropicMessage{{Role: "user", Content: json.RawMessage(`"hi"`)}},
+	}
+
+	out, err := AnthropicToChatCompletionsRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, "xhigh", out.ReasoningEffort)
+}
+
 func TestAnthropicToChatCompletionsRequest_ReasoningEffortDefaultMedium(t *testing.T) {
 	req := &AnthropicRequest{
 		Model:     "gpt-5.4",

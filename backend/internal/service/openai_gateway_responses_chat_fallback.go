@@ -71,6 +71,11 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	// 国产模型默认 effort 补充：需要 mappedModel 判定，推迟到 billingModel 算出之后。
 	reasoningEffort = ApplyThinkingEnabledFallback(reasoningEffort, body, billingModel)
 	chatReq.Model = upstreamModel
+	if reasoningEffort == nil && explicitRequestedReasoningEffortFromBody(body) != "" && strings.TrimSpace(chatReq.ReasoningEffort) != "" {
+		// 客户端显式发了网关不认识的档位（如 ultracode）：usage 记录实际转发的值。
+		clamped := chatReq.ReasoningEffort
+		reasoningEffort = &clamped
+	}
 	if clientStream {
 		chatReq.StreamOptions = &apicompat.ChatStreamOptions{IncludeUsage: true}
 	}

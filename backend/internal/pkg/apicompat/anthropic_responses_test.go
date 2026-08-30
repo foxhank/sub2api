@@ -1225,6 +1225,22 @@ func TestAnthropicToResponses_OutputConfigMax(t *testing.T) {
 	assert.Equal(t, "auto", resp.Reasoning.Summary)
 }
 
+func TestAnthropicToResponses_OutputConfigUltracode(t *testing.T) {
+	// output_config.effort="ultracode"（Claude Code 顶级档位）→ 与 max 同槽位，映射为 xhigh。
+	req := &AnthropicRequest{
+		Model:        "gpt-5.2",
+		MaxTokens:    1024,
+		Messages:     []AnthropicMessage{{Role: "user", Content: json.RawMessage(`"Hello"`)}},
+		OutputConfig: &AnthropicOutputConfig{Effort: "ultracode"},
+	}
+
+	resp, err := AnthropicToResponses(req)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Reasoning)
+	assert.Equal(t, "xhigh", resp.Reasoning.Effort)
+	assert.Equal(t, "auto", resp.Reasoning.Summary)
+}
+
 func TestAnthropicToResponses_NoOutputConfig(t *testing.T) {
 	// No output_config → default medium regardless of thinking.type.
 	req := &AnthropicRequest{

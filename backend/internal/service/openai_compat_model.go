@@ -103,14 +103,18 @@ func openAIReasoningEffortToClaudeOutputEffort(effort string) string {
 }
 
 // openAICompatAnthropicReasoningEffort resolves the effort emitted by the
-// Anthropic bridge after the final upstream model is known. Anthropic's max is
-// normally translated to OpenAI xhigh, but GPT-5.6 accepts the original max
-// value on Responses and Chat Completions.
+// Anthropic bridge after the final upstream model is known. Anthropic's max
+// (including client aliases such as Claude Code's ultracode, folded by
+// NormalizeMaxReasoningEffort) is normally translated to OpenAI xhigh, but
+// GPT-5.6 accepts the original max value on Responses and Chat Completions.
 func openAICompatAnthropicReasoningEffort(req *apicompat.AnthropicRequest, upstreamModel, convertedEffort string) string {
-	if req == nil || req.OutputConfig == nil || !strings.EqualFold(strings.TrimSpace(req.OutputConfig.Effort), "max") {
+	if req == nil || req.OutputConfig == nil {
 		return convertedEffort
 	}
-	if normalized := normalizeOpenAIReasoningEffortForModel(req.OutputConfig.Effort, upstreamModel); normalized != "" {
+	if NormalizeMaxReasoningEffort(req.OutputConfig.Effort) != "max" {
+		return convertedEffort
+	}
+	if normalized := normalizeOpenAIReasoningEffortForModel("max", upstreamModel); normalized != "" {
 		return normalized
 	}
 	return convertedEffort

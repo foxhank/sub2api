@@ -1241,18 +1241,15 @@ func filterThinkingBlocksInternal(body []byte, _ bool) []byte {
 }
 
 // NormalizeClaudeOutputEffort normalizes Claude's output_config.effort value.
+// Delegates to NormalizeMaxReasoningEffort so client tier aliases (ultracode)
+// and future tiers are recognized in one place.
 // Returns nil for empty or unrecognized values.
 func NormalizeClaudeOutputEffort(raw string) *string {
-	value := strings.ToLower(strings.TrimSpace(raw))
+	value := NormalizeMaxReasoningEffort(raw)
 	if value == "" {
 		return nil
 	}
-	switch value {
-	case "low", "medium", "high", "xhigh", "max":
-		return &value
-	default:
-		return nil
-	}
+	return &value
 }
 
 // DefaultEffortForThinkingEnabled 给"开启了 thinking 但协议层没有 effort 档位概念"

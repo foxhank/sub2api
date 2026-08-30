@@ -25,13 +25,19 @@ type openAIReasoningEffortPolicy struct {
 }
 
 // NormalizeMaxReasoningEffort validates and canonicalizes a group policy value.
-// Empty means that the group does not impose a ceiling.
+// Client tier aliases (e.g. Claude Code's "ultracode" top tier) fold into their
+// canonical slot so policy ceilings and usage recording recognize them; new
+// tiers only need an entry here. Empty means that the group does not impose a
+// ceiling.
 func NormalizeMaxReasoningEffort(raw string) string {
 	value := strings.ToLower(strings.TrimSpace(raw))
 	value = strings.NewReplacer("-", "", "_", "", " ", "").Replace(value)
 	switch value {
 	case "":
 		return ""
+	case "none":
+		// Codex 目录中的最低档：低于 minimal，透传即可，永远不该被 ceiling 抬升。
+		return "none"
 	case "minimal":
 		return "minimal"
 	case "low":
@@ -42,7 +48,7 @@ func NormalizeMaxReasoningEffort(raw string) string {
 		return "high"
 	case "xhigh", "extrahigh":
 		return "xhigh"
-	case "max":
+	case "max", "ultracode":
 		return "max"
 	default:
 		return ""
@@ -50,10 +56,15 @@ func NormalizeMaxReasoningEffort(raw string) string {
 }
 
 func reasoningEffortValuesForPlatform(platform string) []string {
-	if platform != PlatformOpenAI && platform != PlatformComposite {
+	// Anthropic-platform groups can host OpenAI-format accounts; the ceiling
+	// applies when a request bridges to one of them (both bridge paths guard
+	// the application on the resolved account platform).
+	switch platform {
+	case PlatformOpenAI, PlatformComposite, PlatformAnthropic:
+		return openAIReasoningEffortValues
+	default:
 		return nil
 	}
-	return openAIReasoningEffortValues
 }
 
 func normalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error) {
@@ -64,9 +75,10 @@ func normalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error
 	allowedValues := reasoningEffortValuesForPlatform(platform)
 	if len(allowedValues) == 0 {
 		return "", fmt.Errorf(
-			"reasoning effort policy is only supported for platforms %q and %q",
+			"reasoning effort policy is only supported for platforms %q, %q and %q",
 			PlatformOpenAI,
 			PlatformComposite,
+			PlatformAnthropic,
 		)
 	}
 
@@ -86,6 +98,8 @@ func normalizeMaxReasoningEffortForPlatform(platform, raw string) (string, error
 
 func reasoningEffortRank(raw string) (int, bool) {
 	switch NormalizeMaxReasoningEffort(raw) {
+	case "none":
+		return 0, true
 	case "minimal":
 		return 1, true
 	case "low":
@@ -226,6 +240,8 @@ func sanitizeGroupReasoningEffortPolicy(group *Group) {
 // stay in control.
 func ApplyOpenAIReasoningEffortPolicy(body []byte, maxEffort string, mappings []ReasoningEffortMapping) ([]byte, bool) {
 	maxRank, hasMax := reasoningEffortRank(maxEffort)
+	// 遗留数据里 ceiling 可能存着 "none"（历史上表示不设限），rank 0 不能当作有效上限。
+	hasMax = hasMax && maxRank > 0
 	if len(body) == 0 || (!hasMax && len(mappings) == 0) {
 		return body, false
 	}
@@ -248,6 +264,10 @@ func ApplyOpenAIReasoningEffortPolicy(body []byte, maxEffort string, mappings []
 			if hasMax && currentRank > maxRank {
 				effective = NormalizeMaxReasoningEffort(maxEffort)
 			}
+		} else if hasMax {
+			// Ceiling configured and the value is not a recognized tier: a
+			// client tier we do not know yet must not bypass the ceiling.
+			effective = NormalizeMaxReasoningEffort(maxEffort)
 		}
 		if effective == original {
 			continue

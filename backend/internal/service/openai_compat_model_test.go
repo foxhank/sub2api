@@ -2168,3 +2168,38 @@ func TestForwardAsAnthropic_UpstreamRequestIgnoresClientCancel(t *testing.T) {
 	require.NotNil(t, upstream.lastReq)
 	require.NoError(t, upstream.lastReq.Context().Err())
 }
+
+func TestOpenAICompatAnthropicReasoningEffort(t *testing.T) {
+	reqWithEffort := func(effort string) *apicompat.AnthropicRequest {
+		return &apicompat.AnthropicRequest{OutputConfig: &apicompat.AnthropicOutputConfig{Effort: effort}}
+	}
+
+	tests := []struct {
+		name            string
+		req             *apicompat.AnthropicRequest
+		upstreamModel   string
+		convertedEffort string
+		want            string
+	}{
+		// ultracode 是 Claude Code 的新顶级档位，等价 max。
+		{"ultracode on max-capable glm stays max", reqWithEffort("ultracode"), "glm-5.3", "xhigh", "max"},
+		{"ultracode on gpt-5.6 stays max", reqWithEffort("ultracode"), "gpt-5.6-sol", "xhigh", "max"},
+		{"ultracode on third-party upstream falls to converted xhigh", reqWithEffort("ultracode"), "mimo-v2.5", "xhigh", "xhigh"},
+		{"ultracode case-insensitive", reqWithEffort("UltraCode"), "glm-5.3", "xhigh", "max"},
+		// max 语义不变。
+		{"max on gpt-5.6 stays max", reqWithEffort("max"), "gpt-5.6-sol", "xhigh", "max"},
+		{"max on third-party upstream falls to converted xhigh", reqWithEffort("max"), "mimo-v2.5", "xhigh", "xhigh"},
+		// 其余档位走桥接转换值。
+		{"high passthrough", reqWithEffort("high"), "mimo-v2.5", "high", "high"},
+		{"xhigh passthrough", reqWithEffort("xhigh"), "gpt-5.4", "xhigh", "xhigh"},
+		{"unknown passthrough", reqWithEffort("banana"), "mimo-v2.5", "medium", "medium"},
+		{"nil request passthrough", nil, "mimo-v2.5", "medium", "medium"},
+		{"no output config passthrough", &apicompat.AnthropicRequest{}, "mimo-v2.5", "medium", "medium"},
+		{"empty effort passthrough", reqWithEffort("  "), "mimo-v2.5", "medium", "medium"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, openAICompatAnthropicReasoningEffort(tt.req, tt.upstreamModel, tt.convertedEffort))
+		})
+	}
+}

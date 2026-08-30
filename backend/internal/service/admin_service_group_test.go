@@ -909,11 +909,31 @@ func TestAdminService_UpdateGroup_ClearsReasoningPolicyForUnsupportedPlatform(t 
 	repo := &groupRepoStubForAdmin{getByID: existing}
 	svc := &adminServiceImpl{groupRepo: repo}
 
-	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{Platform: PlatformAnthropic})
+	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{Platform: PlatformGemini})
 
 	require.NoError(t, err)
 	require.Empty(t, repo.updated.MaxReasoningEffort)
 	require.Empty(t, repo.updated.ReasoningEffortMappings)
+}
+
+// anthropic 分组可挂 OpenAI 格式账号并桥接转发，策略随平台切换保留。
+func TestAdminService_UpdateGroup_KeepsReasoningPolicyWhenSwitchingToAnthropic(t *testing.T) {
+	existing := &Group{
+		ID:                      1,
+		Name:                    "openai-group",
+		Platform:                PlatformOpenAI,
+		Status:                  StatusActive,
+		MaxReasoningEffort:      "medium",
+		ReasoningEffortMappings: []ReasoningEffortMapping{{From: "max", To: "xhigh"}},
+	}
+	repo := &groupRepoStubForAdmin{getByID: existing}
+	svc := &adminServiceImpl{groupRepo: repo}
+
+	_, err := svc.UpdateGroup(context.Background(), existing.ID, &UpdateGroupInput{Platform: PlatformAnthropic})
+
+	require.NoError(t, err)
+	require.Equal(t, "medium", repo.updated.MaxReasoningEffort)
+	require.Equal(t, []ReasoningEffortMapping{{From: "max", To: "xhigh"}}, repo.updated.ReasoningEffortMappings)
 }
 
 func TestAdminService_UpdateGroup_ClearsPeakRateWhenChangingToStandard(t *testing.T) {
