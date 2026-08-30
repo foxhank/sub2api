@@ -893,6 +893,25 @@ func (a *Account) GetOpenAICompactMode() string {
 	return normalizeOpenAICompactMode(mode)
 }
 
+// GetMaxReasoningEffort returns the per-account reasoning-effort ceiling
+// (extra.max_reasoning_effort) applied to requests forwarded through this
+// account to an OpenAI-format upstream. Empty means unlimited; unrecognized
+// values are ignored. 共享分组里同时存在支持与不支持扩展档位的账号时，给不支持
+// 的账号配置上限即可，调度到支持账号的请求不受影响。
+func (a *Account) GetMaxReasoningEffort() string {
+	if a == nil || !a.IsOpenAI() || a.Extra == nil {
+		return ""
+	}
+	raw, _ := a.Extra["max_reasoning_effort"].(string)
+	value := NormalizeMaxReasoningEffort(raw)
+	switch value {
+	case "minimal", "low", "medium", "high", "xhigh", "max":
+		return value
+	default:
+		return ""
+	}
+}
+
 // OpenAICompactSupportKnown reports whether compact capability is known for this
 // account and, when known, whether it is supported.
 func (a *Account) OpenAICompactSupportKnown() (supported bool, known bool) {

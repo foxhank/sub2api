@@ -45,6 +45,22 @@ export interface UpdateResult {
   need_restart: boolean
 }
 
+export interface UpdateStatusInfo {
+  status: 'idle' | 'running' | 'success' | 'failed'
+  version?: string
+  message?: string
+  updated_at?: string
+}
+
+/**
+ * Get the state of the most recent update attempt.
+ * 反代掐断更新请求（504）后，前端轮询此端点获取后台真实进度。
+ */
+export async function getUpdateStatus(): Promise<UpdateStatusInfo> {
+  const { data } = await apiClient.get<UpdateStatusInfo>('/admin/system/update-status')
+  return data
+}
+
 export interface RollbackVersionInfo {
   version: string
   published_at: string

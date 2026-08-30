@@ -87,6 +87,14 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return nil
 	}
 
+	// 其余非 Anthropic 上游（OpenAI 格式账号、grok 等）同样没有 anthropic
+	// count_tokens 端点，转发只会拿到上游的 404 页面（如 OpenCode 返回官网
+	// HTML）。同样返回语义化 404 让客户端本地估算，且不作为网关错误记录。
+	if account.Platform != PlatformAnthropic {
+		s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported for this upstream platform")
+		return nil
+	}
+
 	// 应用模型映射：
 	// - APIKey 账号：使用账号级别的显式映射（如果配置），否则透传原始模型名
 	// - OAuth/SetupToken 账号：使用 Anthropic 标准映射（短ID → 长ID）

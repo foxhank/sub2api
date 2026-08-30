@@ -27,6 +27,14 @@ func (s *updateServiceCacheStub) SetUpdateInfo(_ context.Context, data string, _
 	return nil
 }
 
+func (s *updateServiceCacheStub) GetUpdateStatus(context.Context) (string, error) {
+	return "", errors.New("cache miss")
+}
+
+func (s *updateServiceCacheStub) SetUpdateStatus(_ context.Context, _ string, _ time.Duration) error {
+	return nil
+}
+
 type updateServiceGitHubClientStub struct {
 	release        *GitHubRelease
 	recentReleases []*GitHubRelease

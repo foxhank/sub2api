@@ -433,7 +433,7 @@ func extractAnthropicTextFromBlocks(blocks []AnthropicContentBlock) string {
 //	high   → high
 //	max    → xhigh
 func mapAnthropicEffortToResponses(effort string) string {
-	if effort == "max" {
+	if effort == "max" || effort == "ultracode" {
 		return "xhigh"
 	}
 	return effort // low→low, medium→medium, high→high, unknown→passthrough

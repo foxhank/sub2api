@@ -45,7 +45,10 @@ func TestNormalizeMaxReasoningEffort(t *testing.T) {
 		{name: "empty", in: "", want: ""},
 		{name: "separator", in: "x-high", want: "xhigh"},
 		{name: "max is distinct", in: "max", want: "max"},
-		{name: "none is unsupported", in: "none", want: ""},
+		{name: "none is the lowest codex tier", in: "none", want: "none"},
+		{name: "claude ultracode alias folds to max", in: "ultracode", want: "max"},
+		{name: "ultracode alias case/separator insensitive", in: "Ultra_Code", want: "max"},
+		{name: "none is the lowest codex tier", in: "none", want: "none"},
 		{name: "invalid", in: "banana", want: ""},
 	}
 	for _, tt := range tests {
@@ -90,7 +93,8 @@ func TestNormalizeReasoningEffortMappings(t *testing.T) {
 		}
 
 		_, err := NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "none", To: "low"}})
-		require.ErrorContains(t, err, "empty or unknown")
+		// none 能被识别为档位，但不允许作为映射源/目标。
+		require.ErrorContains(t, err, "not supported")
 
 		_, err = NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "ultra", To: "high"}})
 		require.ErrorContains(t, err, "empty or unknown")
@@ -162,4 +166,54 @@ func TestApplyOpenAIReasoningEffortPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClampReasoningEffortForAccount(t *testing.T) {
+	accountWithCeiling := func(ceiling string) *Account {
+		return &Account{
+			Platform: PlatformOpenAI,
+			Type:     AccountTypeAPIKey,
+			Extra:    map[string]any{"max_reasoning_effort": ceiling},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		effort  string
+		account *Account
+		want    string
+	}{
+		// OpenCode 场景：账号配 high，ultracode/max/xhigh 全部降为 high。
+		{"ultracode clamped to high", "ultracode", accountWithCeiling("high"), "high"},
+		{"max clamped to high", "max", accountWithCeiling("high"), "high"},
+		{"xhigh clamped to high", "xhigh", accountWithCeiling("high"), "high"},
+		{"high unchanged", "high", accountWithCeiling("high"), "high"},
+		{"medium unchanged", "medium", accountWithCeiling("high"), "medium"},
+		// none 比一切 ceiling 都低，永不抬升。
+		{"none never raised", "none", accountWithCeiling("high"), "none"},
+		// 配 max 的账号：扩展档位照常透传（支持 ultracode 的账号）。
+		{"ultracode passthrough with max ceiling", "ultracode", accountWithCeiling("max"), "ultracode"},
+		{"xhigh passthrough with max ceiling", "xhigh", accountWithCeiling("max"), "xhigh"},
+		// 未配置 ceiling：完全不影响。
+		{"no ceiling passthrough", "ultracode", accountWithCeiling(""), "ultracode"},
+		{"nil account passthrough", "max", nil, "max"},
+		// 非法 ceiling 值视为未配置。
+		{"invalid ceiling ignored", "max", accountWithCeiling("banana"), "max"},
+		// 未认识的未来档位也不允许越过 ceiling。
+		{"unknown tier clamped", "hyper-max-plus", accountWithCeiling("high"), "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, clampReasoningEffortForAccount(tt.effort, tt.account))
+		})
+	}
+}
+
+func TestAccountGetMaxReasoningEffort(t *testing.T) {
+	require.Equal(t, "", (*Account)(nil).GetMaxReasoningEffort())
+	require.Equal(t, "", (&Account{Platform: PlatformAnthropic}).GetMaxReasoningEffort(), "非 openai 账号不生效")
+	require.Equal(t, "high", (&Account{Platform: PlatformOpenAI, Extra: map[string]any{"max_reasoning_effort": "high"}}).GetMaxReasoningEffort())
+	require.Equal(t, "max", (&Account{Platform: PlatformOpenAI, Extra: map[string]any{"max_reasoning_effort": "ULTRA_CODE"}}).GetMaxReasoningEffort())
+	require.Equal(t, "", (&Account{Platform: PlatformOpenAI, Extra: map[string]any{"max_reasoning_effort": "banana"}}).GetMaxReasoningEffort(), "非法值视为未配置")
+	require.Equal(t, "", (&Account{Platform: PlatformOpenAI}).GetMaxReasoningEffort())
 }

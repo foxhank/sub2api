@@ -8,7 +8,10 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-const updateCacheKey = "update:latest"
+const (
+	updateCacheKey  = "update:latest"
+	updateStatusKey = "update:status"
+)
 
 type updateCache struct {
 	rdb *redis.Client
@@ -24,4 +27,12 @@ func (c *updateCache) GetUpdateInfo(ctx context.Context) (string, error) {
 
 func (c *updateCache) SetUpdateInfo(ctx context.Context, data string, ttl time.Duration) error {
 	return c.rdb.Set(ctx, updateCacheKey, data, ttl).Err()
+}
+
+func (c *updateCache) GetUpdateStatus(ctx context.Context) (string, error) {
+	return c.rdb.Get(ctx, updateStatusKey).Result()
+}
+
+func (c *updateCache) SetUpdateStatus(ctx context.Context, data string, ttl time.Duration) error {
+	return c.rdb.Set(ctx, updateStatusKey, data, ttl).Err()
 }

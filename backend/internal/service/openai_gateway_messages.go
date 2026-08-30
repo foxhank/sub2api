@@ -18,6 +18,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/util/responseheaders"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -274,6 +275,17 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 			responsesBody = policyBody
 			if responsesReq.Reasoning != nil {
 				responsesReq.Reasoning.Effort = gjson.GetBytes(responsesBody, "reasoning.effort").String()
+			}
+		}
+		// 账号级思考强度上限：调度到配置了上限的账号时降档，用户侧无感。
+		if effort := strings.TrimSpace(gjson.GetBytes(responsesBody, "reasoning.effort").String()); effort != "" {
+			if capped := clampReasoningEffortForAccount(effort, account); capped != effort {
+				if updated, err := sjson.SetBytes(responsesBody, "reasoning.effort", capped); err == nil {
+					responsesBody = updated
+					if responsesReq.Reasoning != nil {
+						responsesReq.Reasoning.Effort = capped
+					}
+				}
 			}
 		}
 	}
