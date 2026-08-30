@@ -19,8 +19,7 @@ const reasoningEffortValuesForPlatform = (
 export function supportsReasoningEffortPolicyPlatform(
   platform: GroupPlatform,
 ): boolean {
-  // anthropic 分组可挂 OpenAI 格式账号，桥接转发时按此上限降档。
-  return platform === "openai" || platform === "composite" || platform === "anthropic";
+  return platform === "openai" || platform === "composite";
 }
 
 export function reasoningEffortOptionsForPlatform(platform: GroupPlatform) {

@@ -110,7 +110,7 @@ func applyOpenAIReasoningEffortPolicyForRequest(c *gin.Context, apiKey *service.
 }
 
 func bindOpenAIReasoningEffortPolicyForMessagesRequest(c *gin.Context, apiKey *service.APIKey, body []byte) {
-	if c == nil || c.Request == nil || apiKey == nil || apiKey.Group == nil {
+	if c == nil || c.Request == nil {
 		return
 	}
 	bindRequestedReasoningEffort(c, body, strings.TrimSpace(gjson.GetBytes(body, "model").String()))
@@ -121,14 +121,9 @@ func bindOpenAIReasoningEffortPolicyForMessagesRequest(c *gin.Context, apiKey *s
 	if !effort.Exists() || effort.Type != gjson.String || strings.TrimSpace(effort.String()) == "" {
 		return
 	}
-	// Anthropic-platform groups reach OpenAI-format upstreams through the
-	// Messages bridge, so a configured ceiling must bind here as well. It only
-	// takes effect once the request actually routes to an OpenAI account —
-	// both bridge paths guard the application on the resolved account platform.
-	switch apiKey.Group.Platform {
-	case service.PlatformOpenAI, service.PlatformComposite, service.PlatformAnthropic:
-	default:
+	maxEffort, mappings, ok := openAIReasoningEffortPolicyForRequest(c, apiKey)
+	if !ok {
 		return
 	}
-	c.Request = c.Request.WithContext(service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), apiKey.Group.MaxReasoningEffort, apiKey.Group.ReasoningEffortMappings))
+	c.Request = c.Request.WithContext(service.WithOpenAIReasoningEffortPolicy(c.Request.Context(), maxEffort, mappings))
 }

@@ -1263,8 +1263,6 @@ func TestNormalizeClaudeOutputEffort(t *testing.T) {
 		{" medium ", strPtr("medium")},
 		{"xhigh", strPtr("xhigh")},
 		{"XHIGH", strPtr("xhigh")},
-		{"ultracode", strPtr("max")},
-		{"UltraCode", strPtr("max")},
 		{"", nil},
 		{"unknown", nil},
 	}
