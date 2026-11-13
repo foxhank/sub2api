@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/json"
+	"os"
+	"os/exec"
 	"strconv"
 	"testing"
 
@@ -270,7 +272,7 @@ func TestSanitizeOpenAIResponsesToolSchemasForPlatform_ReplayBoundary(t *testing
 	// A malformed tool definition may be replayed after account failover. Every
 	// compatible account must repair it, while non-OpenAI providers retain their
 	// supported regex semantics.
-	for _, platform := range []string{PlatformAnthropic, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek} {
+	for _, platform := range []string{PlatformAnthropic, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax} {
 		t.Run(platform, func(t *testing.T) {
 			for attempt := 0; attempt < 2; attempt++ {
 				normalized, changed, err := sanitizeOpenAIResponsesToolSchemasForPlatform(body, platform)
@@ -587,6 +589,17 @@ func buildToolSchemaNullTypeBody(t *testing.T, hits int) []byte {
 // 构造请求可以塞进百万级命中，会被放大成 TB 级 memcpy。这里用分配次数锁死该行为：
 // 命中数放大 500 倍，分配次数不得随之增长。
 func TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits(t *testing.T) {
+	const isolatedAllocEnv = "SUB2API_TOOL_SCHEMA_ALLOC_ISOLATED"
+	if os.Getenv(isolatedAllocEnv) != "1" {
+		executable, err := os.Executable()
+		require.NoError(t, err)
+		command := exec.Command(executable, "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.timeout=1m")
+		command.Env = append(os.Environ(), isolatedAllocEnv+"=1")
+		output, err := command.CombinedOutput()
+		require.NoError(t, err, "isolated allocation guard failed:\n%s", output)
+		return
+	}
+
 	small := buildToolSchemaNullTypeBody(t, 4)
 	large := buildToolSchemaNullTypeBody(t, 2000)
 
@@ -598,8 +611,6 @@ func TestSanitizeOpenAIResponsesToolParameterTypes_RewriteCountIndependentOfHits
 	})
 
 	// 命中切片扩容是对数级，留出充裕余量；线性写法在这里会是 2000 量级。
-	// 干净环境实测 large 约 17 allocs，200 是 10 倍余量，同时容忍 CI 慢 pod 上
-	// 包内后台 goroutine（日志/ticker）对进程级 Mallocs 的噪声污染。
 	require.Less(t, largeAllocs, 200.0,
 		"分配次数随命中数线性增长，说明退回了逐路径全量重写 (small=%v large=%v)", smallAllocs, largeAllocs)
 
@@ -651,4 +662,143 @@ func BenchmarkSanitizeOpenAIResponsesToolParameterTypes_ByteSpanPatch(b *testing
 	for i := 0; i < b.N; i++ {
 		_, _, _ = sanitizeOpenAIResponsesToolParameterTypes(body)
 	}
+}
+
+// 回归锁：客户端把 "required" 发成 null 时，xAI 返回
+// `/required: null is not of type "array"`，Moonshot 返回
+// `parameters is not a valid moonshot flavored json schema`，均为 400。
+func TestSanitizeOpenAIResponsesToolParameterTypes_DropsNullRequired(t *testing.T) {
+	body := []byte(`{
+		"model": "grok-4.7",
+		"tools": [
+			{
+				"type": "function",
+				"name": "read_file",
+				"parameters": {
+					"type": "object",
+					"properties": {"path": {"type": "string"}},
+					"required": null
+				}
+			}
+		]
+	}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	// null 的 required 被整键删除：JSON Schema 里缺省 required 等价于无必填项。
+	require.False(t, gjson.GetBytes(sanitized, "tools.0.parameters.required").Exists())
+	// 其余定义原样保留。
+	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.parameters.type").String())
+	require.Equal(t, "string", gjson.GetBytes(sanitized, "tools.0.parameters.properties.path.type").String())
+	require.Equal(t, "read_file", gjson.GetBytes(sanitized, "tools.0.name").String())
+	require.Equal(t, "grok-4.7", gjson.GetBytes(sanitized, "model").String())
+}
+
+func TestSanitizeOpenAIResponsesToolParameterTypes_KeepsValidRequired(t *testing.T) {
+	body := []byte(`{
+		"tools": [
+			{
+				"type": "function",
+				"name": "read_file",
+				"parameters": {
+					"type": "object",
+					"properties": {"path": {"type": "string"}},
+					"required": ["path"]
+				}
+			}
+		]
+	}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Equal(t, []string{"path"}, func() []string {
+		out := []string{}
+		for _, v := range gjson.GetBytes(sanitized, "tools.0.parameters.required").Array() {
+			out = append(out, v.String())
+		}
+		return out
+	}())
+}
+
+// Grok 与国产供应商必须走到同一套清理，否则裸 null required 会直达上游。
+func TestSanitizeOpenAIResponsesToolSchemasForPlatform_DropsNullRequired(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","name":"f","parameters":{"type":"object","required":null}}]}`)
+
+	for _, platform := range []string{PlatformGrok, PlatformOpenAI, PlatformAnthropic, PlatformKimi} {
+		t.Run(platform, func(t *testing.T) {
+			sanitized, changed, err := sanitizeOpenAIResponsesToolSchemasForPlatform(body, platform)
+			require.NoError(t, err)
+			require.True(t, changed)
+			require.False(t, gjson.GetBytes(sanitized, "tools.0.parameters.required").Exists())
+		})
+	}
+}
+
+// 回归锁：/v1/messages 的工具 schema 在 input_schema 下，早前只认 parameters，
+// 导致 Anthropic 协议的工具请求绕过清理，裸 null 直达上游触发 400。
+func TestSanitizeOpenAIResponsesToolParameterTypes_AnthropicInputSchema(t *testing.T) {
+	body := []byte(`{
+		"model": "grok-4.7",
+		"tools": [
+			{
+				"name": "read_file",
+				"description": "read",
+				"input_schema": {
+					"type": "object",
+					"properties": {"path": {"type": "string"}},
+					"required": null
+				}
+			}
+		]
+	}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(sanitized, "tools.0.input_schema.required").Exists())
+	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.input_schema.type").String())
+	require.Equal(t, "string", gjson.GetBytes(sanitized, "tools.0.input_schema.properties.path.type").String())
+	require.Equal(t, "read_file", gjson.GetBytes(sanitized, "tools.0.name").String())
+}
+
+func TestSanitizeOpenAIResponsesToolParameterTypes_AnthropicInputSchemaNullType(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"f","input_schema":{"type":null,"properties":{}}}]}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.Equal(t, "object", gjson.GetBytes(sanitized, "tools.0.input_schema.type").String())
+}
+
+// contentSchema 同样承载子 schema，其中的 null required 必须一并修掉。
+func TestSanitizeOpenAIResponsesToolParameterTypes_ContentSchema(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"f","input_schema":{"type":"object","contentSchema":{"required":null}}}]}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(sanitized, "tools.0.input_schema.contentSchema.required").Exists())
+}
+
+// default / examples / const / enum 里装的是实例数据，其中字面量 {"required": null}
+// 是客户端 payload，不能当成 schema 修改。
+func TestSanitizeOpenAIResponsesToolParameterTypes_PreservesInstanceData(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"f","input_schema":{"type":"object","properties":{"cfg":{"type":"object","default":{"required":null},"examples":[{"required":null}],"const":{"required":null},"enum":[{"required":null}]}}}}]}`)
+
+	sanitized, changed, err := sanitizeOpenAIResponsesToolParameterTypes(body)
+
+	require.NoError(t, err)
+	require.False(t, changed)
+	base := "tools.0.input_schema.properties.cfg"
+	require.True(t, gjson.GetBytes(sanitized, base+".default.required").Exists())
+	require.True(t, gjson.GetBytes(sanitized, base+".examples.0.required").Exists())
+	require.True(t, gjson.GetBytes(sanitized, base+".const.required").Exists())
+	require.True(t, gjson.GetBytes(sanitized, base+".enum.0.required").Exists())
 }
