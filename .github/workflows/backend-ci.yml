@@ -9,7 +9,9 @@ permissions:
 
 jobs:
   shell:
-    runs-on: macos-15
+    # fork: macOS 托管 runner 经常因容量不足排队失败（job 无法被接单），
+    # 测试脚本为纯 bash + 文件 mock，无 macOS 专属依赖，改在 Linux 上执行。
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - name: Check deployment scripts
