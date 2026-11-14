@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"testing"
@@ -8,6 +9,61 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestSanitizeGrokResponsesModelInputAgentMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		text    string
+	}{
+		{"text only", `[{"type":"input_text","text":"What is 19 plus 23?"}]`, "What is 19 plus 23?"},
+		{"envelope and plaintext payload", `[{"type":"input_text","text":"Message Type: NEW_TASK\nPayload:\n"},{"type":"encrypted_content","encrypted_content":"Review the code"},{"type":"text","text":"\nthen report"},{"type":"encrypted_content","encrypted_content":" back. "}]`, "Message Type: NEW_TASK\nPayload:\nReview the code\nthen report back. "},
+		{"string content", `"  task\n"`, "  task\n"},
+		{"opaque content is not decrypted", `[{"type":"encrypted_content","encrypted_content":"gAAAAABopaque=="}]`, "gAAAAABopaque=="},
+		{"empty content", `[]`, ""},
+		{"null content", `null`, ""},
+		{"unsupported content", `[{"type":"input_image","image_url":"https://example.com/image.png"},{"type":"output_text","text":"ignored"}]`, ""},
+		{"malformed content", `{"text":"ignored"}`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := []byte(`{"input":[{"type":"agent_message","id":"amsg_1","author":"/root","recipient":"/root/child","role":"assistant","content":` + tt.content + `}]}`)
+			patched, err := sanitizeGrokResponsesModelInput(body)
+			require.NoError(t, err)
+			if tt.text == "" {
+				require.Empty(t, gjson.GetBytes(patched, "input").Array())
+				return
+			}
+			expected, err := json.Marshal([]map[string]any{{"type": "message", "role": "user", "content": tt.text}})
+			require.NoError(t, err)
+			require.JSONEq(t, string(expected), gjson.GetBytes(patched, "input").Raw)
+		})
+	}
+}
+
+func TestSanitizeGrokResponsesModelInputAgentMessageMixedHistory(t *testing.T) {
+	body := []byte(`{"input":[
+		{"type":"message","role":"user","content":"start"},
+		{"type":"agent_message","author":"/root","recipient":"/root/child","content":[{"type":"input_text","text":"Payload:\n"},{"type":"encrypted_content","encrypted_content":"task"}]},
+		{"type":"message","role":"assistant","content":"working"},
+		{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_1","output":"found"},
+		{"type":"agent_message","content":[]},
+		{"type":"agent_message","author":"/root/child","recipient":"/root","content":[{"type":"input_text","text":"result"}]},
+		{"type":"message","role":"user","content":"continue"}
+	]}`)
+	patched, err := sanitizeGrokResponsesModelInput(body)
+	require.NoError(t, err)
+	require.JSONEq(t, `[
+		{"type":"message","role":"user","content":"start"},
+		{"type":"message","role":"user","content":"Payload:\ntask"},
+		{"type":"message","role":"assistant","content":"working"},
+		{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_1","output":"found"},
+		{"type":"message","role":"user","content":"result"},
+		{"type":"message","role":"user","content":"continue"}
+	]`, gjson.GetBytes(patched, "input").Raw)
+}
 
 func TestSanitizeGrokResponsesModelInputNormalizesReplayHistory(t *testing.T) {
 	body := []byte(`{
@@ -110,6 +166,61 @@ func TestSanitizeGrokResponsesModelInputMapsAllItemAliasesAndRejectsConflicts(t 
 	require.NotEqual(t, secondCallID, thirdCallID)
 	require.NotEqual(t, secondCallID, ambiguousOutputID)
 	require.NotEqual(t, thirdCallID, ambiguousOutputID)
+}
+
+func TestSanitizeGrokResponsesModelInputPreservesGrokShellOutputImages(t *testing.T) {
+	body := []byte(`{"input":[
+		{"type":"function_call","call_id":"call_a","name":"read_file","arguments":"{}"},
+		{"type":"function_call","call_id":"call_b","name":"read_file","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_a","content":"Read image file: /tmp/a.png","images":[{"type":"image","url":"data:image/png;base64,QUE="}]},
+		{"type":"function_call_output","call_id":"call_b","content":"Read image file: /tmp/b.png","images":[{"type":"image","url":"data:image/jpeg;base64,QkI="}]}
+	]}`)
+
+	patched, err := sanitizeGrokResponsesModelInput(body)
+	require.NoError(t, err)
+	require.Equal(t, "function_call_output", gjson.GetBytes(patched, "input.2.type").String())
+	require.Equal(t, "Read image file: /tmp/a.png", gjson.GetBytes(patched, "input.2.output").String())
+	require.False(t, gjson.GetBytes(patched, "input.2.images").Exists())
+	require.Equal(t, "function_call_output", gjson.GetBytes(patched, "input.3.type").String())
+	require.Equal(t, "message", gjson.GetBytes(patched, "input.4.type").String())
+	require.Equal(t, "user", gjson.GetBytes(patched, "input.4.role").String())
+	require.Equal(t, "[Tool output media for call call_a]", gjson.GetBytes(patched, "input.4.content.0.text").String())
+	require.Equal(t, "input_image", gjson.GetBytes(patched, "input.4.content.1.type").String())
+	require.Equal(t, "data:image/png;base64,QUE=", gjson.GetBytes(patched, "input.4.content.1.image_url").String())
+	require.Equal(t, "[Tool output media for call call_b]", gjson.GetBytes(patched, "input.4.content.2.text").String())
+	require.Equal(t, "data:image/jpeg;base64,QkI=", gjson.GetBytes(patched, "input.4.content.3.image_url").String())
+}
+
+func TestSanitizeGrokResponsesModelInputPreservesGrok105StructuredOutputImages(t *testing.T) {
+	body := []byte(`{"input":[
+		{"type":"function_call","call_id":"call_read","name":"read_file","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_read","output":[
+			{"type":"input_text","text":"Read image file: /tmp/example.png"},
+			{"type":"input_image","detail":"auto","image_url":"data:image/png;base64,QUE="}
+		]}
+	]}`)
+
+	patched, err := sanitizeGrokResponsesModelInput(body)
+	require.NoError(t, err)
+	require.Equal(t, "function_call_output", gjson.GetBytes(patched, "input.1.type").String())
+	require.Equal(t, "Read image file: /tmp/example.png", gjson.GetBytes(patched, "input.1.output").String())
+	require.NotContains(t, gjson.GetBytes(patched, "input.1.output").String(), "base64")
+	require.Equal(t, "message", gjson.GetBytes(patched, "input.2.type").String())
+	require.Equal(t, "input_image", gjson.GetBytes(patched, "input.2.content.1.type").String())
+	require.Equal(t, "data:image/png;base64,QUE=", gjson.GetBytes(patched, "input.2.content.1.image_url").String())
+}
+
+func TestSanitizeGrokResponsesModelInputSkipsInvalidOutputImages(t *testing.T) {
+	body := []byte(`{"input":[
+		{"type":"function_call_output","call_id":"call_empty","output":"done","images":[{"type":"image","url":"data:image/png;base64,"},{}]},
+		{"role":"user","content":"continue"}
+	]}`)
+
+	patched, err := sanitizeGrokResponsesModelInput(body)
+	require.NoError(t, err)
+	require.Len(t, gjson.GetBytes(patched, "input").Array(), 2)
+	require.Equal(t, "function_call_output", gjson.GetBytes(patched, "input.0.type").String())
+	require.Equal(t, "message", gjson.GetBytes(patched, "input.1.type").String())
 }
 
 func TestPatchGrokResponsesBodyCombinesAdditionalToolsAndDropsOrphanControls(t *testing.T) {

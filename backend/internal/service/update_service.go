@@ -712,6 +712,9 @@ func compareVersions(current, latest string) int {
 
 func parseVersion(v string) [4]int {
 	v = strings.TrimPrefix(v, "v")
+	if idx := strings.IndexByte(v, '-'); idx != -1 {
+		v = v[:idx]
+	}
 	parts := strings.Split(v, ".")
 	result := [4]int{0, 0, 0, 0}
 	for i := 0; i < len(parts) && i < 4; i++ {

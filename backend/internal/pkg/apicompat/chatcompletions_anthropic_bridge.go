@@ -40,6 +40,12 @@ import (
 // ResponsesToChatCompletionsRequest but avoids materializing the intermediate
 // ResponsesRequest and the extra marshal/unmarshal cycle.
 func AnthropicToChatCompletionsRequest(req *AnthropicRequest) (*ChatCompletionsRequest, error) {
+	return AnthropicToChatCompletionsRequestWithMinOutputTokens(req, DefaultMinMaxOutputTokens)
+}
+
+// AnthropicToChatCompletionsRequestWithMinOutputTokens converts an Anthropic
+// Messages request using the supplied max_completion_tokens floor.
+func AnthropicToChatCompletionsRequestWithMinOutputTokens(req *AnthropicRequest, minOutputTokens int) (*ChatCompletionsRequest, error) {
 	if req == nil {
 		return nil, fmt.Errorf("anthropic request is nil")
 	}
@@ -63,8 +69,8 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest) (*ChatCompletionsR
 
 	if req.MaxTokens > 0 {
 		v := req.MaxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
+		if v < minOutputTokens {
+			v = minOutputTokens
 		}
 		out.MaxCompletionTokens = &v
 	}
@@ -99,13 +105,8 @@ func AnthropicToChatCompletionsRequest(req *AnthropicRequest) (*ChatCompletionsR
 		}
 	}
 
-	// Reasoning effort: output_config.effort maps 1:1 (max→xhigh). thinking.type
-	// itself is ignored (the Responses bridge behaves identically).
-	effort := "medium"
-	if req.OutputConfig != nil && req.OutputConfig.Effort != "" {
-		effort = req.OutputConfig.Effort
-	}
-	out.ReasoningEffort = mapAnthropicEffortToResponses(effort)
+	// Match the Responses bridge, including an explicit thinking disable.
+	out.ReasoningEffort = anthropicReasoningEffort(req)
 
 	parallelToolCalls := true
 	out.ParallelToolCalls = &parallelToolCalls
@@ -576,7 +577,7 @@ type ChatCompletionsToAnthropicStreamState struct {
 	toolAnnounced     map[int]bool
 	toolName          map[int]string
 	pendingToolCallID map[int]string
-	pendingToolArgs   map[int]string
+	pendingToolArgs   map[int]*strings.Builder
 
 	// Reasoning (DeepSeek-style): reasoning_content streamed before content.
 	// No separate reasoning block index — it uses ContentBlockIndex like the
@@ -605,7 +606,7 @@ func NewChatCompletionsToAnthropicStreamState(model string) *ChatCompletionsToAn
 		toolAnnounced:     make(map[int]bool),
 		toolName:          make(map[int]string),
 		pendingToolCallID: make(map[int]string),
-		pendingToolArgs:   make(map[int]string),
+		pendingToolArgs:   make(map[int]*strings.Builder),
 	}
 }
 
@@ -840,7 +841,12 @@ func handleCCAnthropicToolCall(state *ChatCompletionsToAnthropicStreamState, too
 				},
 			})
 		} else {
-			state.pendingToolArgs[idx] += toolCall.Function.Arguments
+			buffer := state.pendingToolArgs[idx]
+			if buffer == nil {
+				buffer = &strings.Builder{}
+				state.pendingToolArgs[idx] = buffer
+			}
+			_, _ = buffer.WriteString(toolCall.Function.Arguments)
 		}
 	}
 
@@ -871,7 +877,8 @@ func announceCCAnthropicToolBlock(state *ChatCompletionsToAnthropicStreamState, 
 			Input: json.RawMessage("{}"),
 		},
 	}}
-	if pending := state.pendingToolArgs[idx]; pending != "" {
+	if buffer := state.pendingToolArgs[idx]; buffer != nil && buffer.Len() > 0 {
+		pending := buffer.String()
 		delete(state.pendingToolArgs, idx)
 		state.CurrentToolHadDelta = true
 		events = append(events, AnthropicStreamEvent{
