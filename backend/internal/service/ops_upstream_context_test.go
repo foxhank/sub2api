@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -308,4 +309,57 @@ func TestOpsServiceGetErrorLogByIDNormalizesLegacyProxyAttribution(t *testing.T)
 	require.NotContains(t, detail.UpstreamErrors, `"proxy_mode"`)
 	require.NotContains(t, detail.UpstreamErrors, `"proxy_source"`)
 	require.NotContains(t, detail.UpstreamErrors, `"proxy_fallback"`)
+}
+
+func TestRecordForwardFailureContextRecordsRootCause(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	account := &Account{ID: 5, Name: "智谱Max", Platform: PlatformAnthropic}
+	RecordForwardFailureContext(c, account, fmt.Errorf("web search emulation: websearch: no available provider (all exhausted or failed)"))
+
+	if msg, ok := c.Get(OpsUpstreamErrorMessageKey); !ok {
+		t.Fatal("expected upstream error message to be set")
+	} else if m, _ := msg.(string); !strings.Contains(m, "no available provider") {
+		t.Fatalf("unexpected message %q", m)
+	}
+
+	v, ok := c.Get(OpsUpstreamErrorsKey)
+	if !ok {
+		t.Fatal("expected upstream error events to be recorded")
+	}
+	events, _ := v.([]*OpsUpstreamErrorEvent)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	ev := events[0]
+	if ev.Kind != "gateway_request_error" {
+		t.Fatalf("unexpected kind %q", ev.Kind)
+	}
+	if ev.AccountID != 5 || ev.AccountName != "智谱Max" || ev.Platform != PlatformAnthropic {
+		t.Fatalf("unexpected attribution: %+v", ev)
+	}
+	if ev.ProxyName != opsProxyNameDirect {
+		t.Fatalf("expected direct proxy attribution, got %q", ev.ProxyName)
+	}
+}
+
+func TestRecordForwardFailureContextSkipsClientCanceled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+
+	RecordForwardFailureContext(c, nil, context.Canceled)
+	if _, exists := c.Get(OpsUpstreamErrorsKey); exists {
+		t.Fatal("client cancellation must not be recorded as an upstream failure")
+	}
+}
+
+func TestRecordForwardFailureContextNilSafe(t *testing.T) {
+	RecordForwardFailureContext(nil, nil, nil)
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	RecordForwardFailureContext(c, nil, nil)
+	if _, exists := c.Get(OpsUpstreamErrorsKey); exists {
+		t.Fatal("nil error must not record anything")
+	}
 }

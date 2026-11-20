@@ -539,6 +539,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				upstreamErrorAlreadyCommunicated := gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
+					// 把 Forward 失败的真实根因（web search 模拟失败、请求构建失败等）
+					// 记入 ops 上下文，否则错误日志只剩通用 "Upstream request failed" 兜底体。
+					service.RecordForwardFailureContext(c, account, err)
 					wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
 				}
 				forwardFailedFields := []zap.Field{
@@ -1097,6 +1100,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				upstreamErrorAlreadyCommunicated := gatewayForwardErrorAlreadyCommunicated(c, writerSizeBeforeForward, err)
 				wroteFallback := false
 				if !upstreamErrorAlreadyCommunicated {
+					// 把 Forward 失败的真实根因（web search 模拟失败、请求构建失败等）
+					// 记入 ops 上下文，否则错误日志只剩通用 "Upstream request failed" 兜底体。
+					service.RecordForwardFailureContext(c, account, err)
 					wroteFallback = h.ensureForwardErrorResponse(c, streamStarted)
 				}
 				forwardFailedFields := []zap.Field{

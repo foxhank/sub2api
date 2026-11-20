@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -402,6 +403,40 @@ func GetOpsStreamErrors(c *gin.Context) []OpsStreamError {
 // original upstream status code before mapping it to a client-facing code.
 func SetOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
 	setOpsUpstreamError(c, upstreamStatusCode, upstreamMessage, upstreamDetail)
+}
+
+// RecordForwardFailureContext records the root cause of a Forward attempt that
+// failed without ever reaching an upstream HTTP response — web-search emulation
+// failures, request build errors, credential resolution failures and the like.
+// Without it, the ops error log would only show the generic "Upstream request
+// failed" fallback body the handler writes, hiding the actual cause. Call it
+// before writing the fallback response so in-band stream error snapshots pick
+// the recorded event up.
+func RecordForwardFailureContext(c *gin.Context, account *Account, err error) {
+	if c == nil || err == nil {
+		return
+	}
+	// Client-initiated cancellation is not a provider fault and never lands in
+	// the error board as an upstream failure.
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	safeErr := sanitizeUpstreamErrorMessage(err.Error())
+	if safeErr == "" {
+		return
+	}
+	setOpsUpstreamError(c, 0, safeErr, "")
+	event := OpsUpstreamErrorEvent{
+		Kind:    "gateway_request_error",
+		Message: safeErr,
+	}
+	event.ProxyID, event.ProxyName = opsUpstreamProxyAttribution(account)
+	if account != nil {
+		event.Platform = account.Platform
+		event.AccountID = account.ID
+		event.AccountName = account.Name
+	}
+	appendOpsUpstreamError(c, event)
 }
 
 func setOpsUpstreamError(c *gin.Context, upstreamStatusCode int, upstreamMessage, upstreamDetail string) {
