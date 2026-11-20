@@ -98,17 +98,9 @@ func TestManager_SearchWithBestProvider_NilRedis(t *testing.T) {
 
 func TestManager_GetUsage_NilRedis(t *testing.T) {
 	m := NewManager(nil, nil)
-	used, err := m.GetUsage(context.Background(), "brave")
+	used, err := m.GetUsage(context.Background(), ProviderConfig{Type: "brave", APIKey: "k"})
 	require.NoError(t, err)
 	require.Equal(t, int64(0), used)
-}
-
-func TestManager_GetAllUsage_NilRedis(t *testing.T) {
-	m := NewManager([]ProviderConfig{
-		{Type: "brave"},
-	}, nil)
-	usage := m.GetAllUsage(context.Background())
-	require.Equal(t, int64(0), usage["brave"])
 }
 
 // --- Quota TTL from subscription ---
@@ -188,8 +180,17 @@ func TestAddMonthsClamped_NormalDay(t *testing.T) {
 // --- Redis key ---
 
 func TestQuotaRedisKey_Format(t *testing.T) {
-	key := quotaRedisKey("brave")
-	require.Equal(t, "websearch:quota:brave", key)
+	key := quotaRedisKey(ProviderConfig{Type: "brave", APIKey: "k"})
+	require.Equal(t, "websearch:quota:brave:"+apiKeyHash("k"), key)
+	require.Len(t, apiKeyHash("k"), 8)
+}
+
+func TestQuotaRedisKey_DistinctPerKey(t *testing.T) {
+	a := quotaRedisKey(ProviderConfig{Type: "tavily", APIKey: "key-one"})
+	b := quotaRedisKey(ProviderConfig{Type: "tavily", APIKey: "key-two"})
+	require.NotEqual(t, a, b)
+	sameTypeOtherKey := quotaRedisKey(ProviderConfig{Type: "tavily", APIKey: "key-one"})
+	require.Equal(t, a, sameTypeOtherKey)
 }
 
 // --- isProviderAvailable ---

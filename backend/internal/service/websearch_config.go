@@ -21,6 +21,8 @@ type WebSearchEmulationConfig struct {
 }
 
 // WebSearchProviderConfig describes a single search provider (Brave or Tavily).
+// Multiple entries of the same type are allowed (e.g. several Tavily keys for
+// load balancing); quota counters are tracked per API key.
 type WebSearchProviderConfig struct {
 	Type             string `json:"type"`                    // websearch.ProviderTypeBrave | Tavily
 	APIKey           string `json:"api_key,omitempty"`       // secret — omitted in API responses
@@ -28,13 +30,14 @@ type WebSearchProviderConfig struct {
 	QuotaLimit       *int64 `json:"quota_limit"`             // nil = unlimited, >0 = limited
 	SubscribedAt     *int64 `json:"subscribed_at,omitempty"` // subscription start (unix seconds); quota resets monthly
 	QuotaUsed        int64  `json:"quota_used,omitempty"`    // read-only: current usage from Redis
+	KeyHash          string `json:"key_hash,omitempty"`      // read-only: short hash identifying the key (for per-key reset)
 	ProxyID          *int64 `json:"proxy_id"`                // optional proxy association
 	ExpiresAt        *int64 `json:"expires_at,omitempty"`    // optional expiration timestamp
 }
 
 // --- Validation ---
 
-const maxWebSearchProviders = 10
+const maxWebSearchProviders = 20
 
 var validProviderTypes = map[string]bool{
 	websearch.ProviderTypeBrave:  true,
@@ -48,7 +51,6 @@ func validateWebSearchConfig(cfg *WebSearchEmulationConfig) error {
 	if len(cfg.Providers) > maxWebSearchProviders {
 		return fmt.Errorf("too many providers (max %d)", maxWebSearchProviders)
 	}
-	seen := make(map[string]bool, len(cfg.Providers))
 	for i, p := range cfg.Providers {
 		if !validProviderTypes[p.Type] {
 			return fmt.Errorf("provider[%d]: invalid type %q", i, p.Type)
@@ -56,10 +58,30 @@ func validateWebSearchConfig(cfg *WebSearchEmulationConfig) error {
 		if p.QuotaLimit != nil && *p.QuotaLimit < 0 {
 			return fmt.Errorf("provider[%d]: quota_limit must be > 0 or null", i)
 		}
-		if seen[p.Type] {
-			return fmt.Errorf("provider[%d]: duplicate type %q", i, p.Type)
+	}
+	return nil
+}
+
+// checkWebSearchAPIKeys validates the post-merge key set: enabled providers
+// must all have an API key, and the same key may not appear twice — duplicate
+// entries of one type are the supported multi-key load-balancing form, but
+// each entry must hold a distinct key.
+func checkWebSearchAPIKeys(cfg *WebSearchEmulationConfig) error {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
+	seenKeys := make(map[string]bool, len(cfg.Providers))
+	for _, p := range cfg.Providers {
+		if p.APIKey == "" {
+			return infraerrors.BadRequest("MISSING_API_KEY",
+				fmt.Sprintf("provider %s has no API key configured", p.Type))
 		}
-		seen[p.Type] = true
+		id := p.Type + "\x00" + p.APIKey
+		if seenKeys[id] {
+			return infraerrors.BadRequest("DUPLICATE_API_KEY",
+				fmt.Sprintf("provider %s has a duplicate API key", p.Type))
+		}
+		seenKeys[id] = true
 	}
 	return nil
 }
@@ -150,14 +172,15 @@ func (s *SettingService) SaveWebSearchEmulationConfig(ctx context.Context, cfg *
 	}
 	s.mergeExistingAPIKeys(ctx, cfg)
 
-	// After merge, validate all enabled providers have API keys
-	if cfg.Enabled {
-		for _, p := range cfg.Providers {
-			if p.APIKey == "" {
-				return infraerrors.BadRequest("MISSING_API_KEY",
-					fmt.Sprintf("provider %s has no API key configured", p.Type))
-			}
-		}
+	// After merge, validate the key set: enabled providers must all have keys
+	// and no key may be registered twice (it would double-count quota).
+	if err := checkWebSearchAPIKeys(cfg); err != nil {
+		return err
+	}
+
+	// KeyHash is a derived read-only value recomputed on every read; never persist it.
+	for i := range cfg.Providers {
+		cfg.Providers[i].KeyHash = ""
 	}
 
 	data, err := json.Marshal(cfg)
@@ -179,22 +202,29 @@ func (s *SettingService) SaveWebSearchEmulationConfig(ctx context.Context, cfg *
 	return nil
 }
 
-// mergeExistingAPIKeys preserves API keys from the current config when incoming value is empty.
+// mergeExistingAPIKeys preserves API keys from the current config when incoming
+// value is empty. With multiple keys per type allowed, keys are matched
+// positionally: the Nth empty-keyed entry of a type receives the Nth stored key
+// of that type, so edits that only touch quota/proxy fields keep their keys.
 func (s *SettingService) mergeExistingAPIKeys(ctx context.Context, cfg *WebSearchEmulationConfig) {
 	existing, _ := s.getWebSearchEmulationConfigRaw(ctx)
 	if existing == nil || cfg == nil {
 		return
 	}
-	existingByType := make(map[string]string, len(existing.Providers))
+	existingKeysByType := make(map[string][]string, len(existing.Providers))
 	for _, p := range existing.Providers {
 		if p.APIKey != "" {
-			existingByType[p.Type] = p.APIKey
+			existingKeysByType[p.Type] = append(existingKeysByType[p.Type], p.APIKey)
 		}
 	}
+	consumedByType := make(map[string]int, len(existingKeysByType))
 	for i := range cfg.Providers {
 		if cfg.Providers[i].APIKey == "" {
-			if key, ok := existingByType[cfg.Providers[i].Type]; ok {
-				cfg.Providers[i].APIKey = key
+			t := cfg.Providers[i].Type
+			keys := existingKeysByType[t]
+			if idx := consumedByType[t]; idx < len(keys) {
+				cfg.Providers[i].APIKey = keys[idx]
+				consumedByType[t] = idx + 1
 			}
 		}
 	}
@@ -299,37 +329,25 @@ func TestWebSearch(ctx context.Context, query string) (*WebSearchTestResult, err
 
 // PopulateWebSearchUsage returns a copy with quota usage populated from Redis (api_key kept as-is).
 func PopulateWebSearchUsage(ctx context.Context, cfg *WebSearchEmulationConfig) *WebSearchEmulationConfig {
-	if cfg == nil {
-		return nil
-	}
-	out := *cfg
-	out.Providers = make([]WebSearchProviderConfig, len(cfg.Providers))
-
-	mgr := getWebSearchManager()
-
-	for i, p := range cfg.Providers {
-		out.Providers[i] = p
-		out.Providers[i].APIKeyConfigured = p.APIKey != ""
-
-		if mgr != nil {
-			used, _ := mgr.GetUsage(ctx, p.Type)
-			out.Providers[i].QuotaUsed = used
-		}
-	}
-	return &out
+	return populateWebSearchUsage(ctx, cfg, false)
 }
 
-// ResetWebSearchUsage deletes the Redis quota key for the given provider type.
-func ResetWebSearchUsage(ctx context.Context, providerType string) error {
+// ResetWebSearchUsage deletes the Redis quota counter for a provider type, or
+// for a single key when keyHash is non-empty.
+func ResetWebSearchUsage(ctx context.Context, providerType, keyHash string) error {
 	mgr := getWebSearchManager()
 	if mgr == nil {
 		return fmt.Errorf("web search manager not initialized")
 	}
+	if keyHash != "" {
+		return mgr.ResetUsageForKey(ctx, providerType, keyHash)
+	}
 	return mgr.ResetUsage(ctx, providerType)
 }
 
-// SanitizeWebSearchConfig returns a copy with api_key fields masked and quota usage populated.
-func SanitizeWebSearchConfig(ctx context.Context, cfg *WebSearchEmulationConfig) *WebSearchEmulationConfig {
+// populateWebSearchUsage fills per-key quota usage and the read-only key hash.
+// When blankKeys is true the api_key field is stripped (never return secrets).
+func populateWebSearchUsage(ctx context.Context, cfg *WebSearchEmulationConfig, blankKeys bool) *WebSearchEmulationConfig {
 	if cfg == nil {
 		return nil
 	}
@@ -342,13 +360,21 @@ func SanitizeWebSearchConfig(ctx context.Context, cfg *WebSearchEmulationConfig)
 	for i, p := range cfg.Providers {
 		out.Providers[i] = p
 		out.Providers[i].APIKeyConfigured = p.APIKey != ""
-		out.Providers[i].APIKey = "" // never return the secret
+		out.Providers[i].KeyHash = websearch.APIKeyHash(p.APIKey)
+		if blankKeys {
+			out.Providers[i].APIKey = "" // never return the secret
+		}
 
 		// Populate quota usage from Redis
 		if mgr != nil {
-			used, _ := mgr.GetUsage(ctx, p.Type)
+			used, _ := mgr.GetUsage(ctx, websearch.ProviderConfig{Type: p.Type, APIKey: p.APIKey})
 			out.Providers[i].QuotaUsed = used
 		}
 	}
 	return &out
+}
+
+// SanitizeWebSearchConfig returns a copy with api_key fields masked and quota usage populated.
+func SanitizeWebSearchConfig(ctx context.Context, cfg *WebSearchEmulationConfig) *WebSearchEmulationConfig {
+	return populateWebSearchUsage(ctx, cfg, true)
 }

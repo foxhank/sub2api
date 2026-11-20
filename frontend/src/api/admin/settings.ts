@@ -1564,6 +1564,7 @@ export interface WebSearchProviderConfig {
   quota_limit: number | null;
   subscribed_at: number | null;
   quota_used?: number;
+  key_hash?: string;
   proxy_id: number | null;
   expires_at: number | null;
 }
@@ -1608,6 +1609,7 @@ export async function testWebSearchEmulation(
 
 export async function resetWebSearchUsage(payload: {
   provider_type: string;
+  key_hash?: string;
 }): Promise<void> {
   await apiClient.post(
     "/admin/settings/web-search-emulation/reset-usage",

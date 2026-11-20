@@ -28,7 +28,7 @@ func TestValidateWebSearchConfig_Valid(t *testing.T) {
 }
 
 func TestValidateWebSearchConfig_TooManyProviders(t *testing.T) {
-	cfg := &WebSearchEmulationConfig{Providers: make([]WebSearchProviderConfig, 11)}
+	cfg := &WebSearchEmulationConfig{Providers: make([]WebSearchProviderConfig, maxWebSearchProviders+1)}
 	for i := range cfg.Providers {
 		cfg.Providers[i] = WebSearchProviderConfig{Type: "brave"}
 	}
@@ -50,14 +50,59 @@ func TestValidateWebSearchConfig_NegativeQuotaLimit(t *testing.T) {
 	require.ErrorContains(t, validateWebSearchConfig(cfg), "quota_limit must be > 0 or null")
 }
 
-func TestValidateWebSearchConfig_DuplicateType(t *testing.T) {
+func TestValidateWebSearchConfig_DuplicateTypeAllowed(t *testing.T) {
+	// 同类型多 key 是受支持的多 key 负载均衡形态，不再按类型去重。
 	cfg := &WebSearchEmulationConfig{
 		Providers: []WebSearchProviderConfig{
-			{Type: "brave"},
-			{Type: "brave"},
+			{Type: "tavily"},
+			{Type: "tavily"},
 		},
 	}
-	require.ErrorContains(t, validateWebSearchConfig(cfg), "duplicate type")
+	require.NoError(t, validateWebSearchConfig(cfg))
+}
+
+func TestCheckWebSearchAPIKeys_MissingKey(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Enabled:   true,
+		Providers: []WebSearchProviderConfig{{Type: "brave"}},
+	}
+	err := checkWebSearchAPIKeys(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no API key configured")
+}
+
+func TestCheckWebSearchAPIKeys_DuplicateKey(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Enabled: true,
+		Providers: []WebSearchProviderConfig{
+			{Type: "tavily", APIKey: "tvly-1"},
+			{Type: "tavily", APIKey: "tvly-1"},
+		},
+	}
+	err := checkWebSearchAPIKeys(cfg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate API key")
+}
+
+func TestCheckWebSearchAPIKeys_MultipleDistinctKeysOK(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Enabled: true,
+		Providers: []WebSearchProviderConfig{
+			{Type: "tavily", APIKey: "tvly-1"},
+			{Type: "tavily", APIKey: "tvly-2"},
+			{Type: "tavily", APIKey: "tvly-3"},
+			{Type: "brave", APIKey: "brave-1"},
+		},
+	}
+	require.NoError(t, checkWebSearchAPIKeys(cfg))
+}
+
+func TestCheckWebSearchAPIKeys_DisabledAllowsEmpty(t *testing.T) {
+	cfg := &WebSearchEmulationConfig{
+		Enabled:   false,
+		Providers: []WebSearchProviderConfig{{Type: "brave"}},
+	}
+	require.NoError(t, checkWebSearchAPIKeys(cfg))
 }
 
 func TestValidateWebSearchConfig_NilQuotaLimit(t *testing.T) {
@@ -260,7 +305,7 @@ func TestResetWebSearchUsage_NilManager(t *testing.T) {
 	SetWebSearchManager(nil)
 	defer SetWebSearchManager(nil)
 
-	err := ResetWebSearchUsage(context.Background(), "brave")
+	err := ResetWebSearchUsage(context.Background(), "brave", "")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not initialized")
 }

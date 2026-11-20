@@ -2,7 +2,9 @@ package websearch
 
 import (
 	"context"
+	"crypto/sha1"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -173,7 +175,7 @@ func (m *Manager) computeWeights(ctx context.Context, candidates []ProviderConfi
 	for _, cfg := range candidates {
 		w := int64(0)
 		if cfg.QuotaLimit > 0 {
-			used, _ := m.GetUsage(ctx, cfg.Type)
+			used, _ := m.GetUsage(ctx, cfg)
 			if remaining := cfg.QuotaLimit - used; remaining > 0 {
 				w = remaining
 			}
@@ -316,7 +318,7 @@ func (m *Manager) tryReserveQuota(ctx context.Context, cfg ProviderConfig) (bool
 		slog.Warn("websearch: Redis unavailable, quota check skipped", "provider", cfg.Type)
 		return true, false
 	}
-	key := quotaRedisKey(cfg.Type)
+	key := quotaRedisKey(cfg)
 	ttlSec := int(quotaTTLFromSubscription(cfg.SubscribedAt).Seconds())
 	newVal, err := quotaIncrScript.Run(ctx, m.redis, []string{key}, ttlSec).Int64()
 	if err != nil {
@@ -340,7 +342,7 @@ func (m *Manager) rollbackQuota(ctx context.Context, cfg ProviderConfig) {
 	if cfg.QuotaLimit <= 0 || m.redis == nil {
 		return
 	}
-	key := quotaRedisKey(cfg.Type)
+	key := quotaRedisKey(cfg)
 	if err := m.redis.Decr(ctx, key).Err(); err != nil {
 		slog.Warn("websearch: quota rollback DECR failed",
 			"provider", cfg.Type, "error", err)
@@ -424,12 +426,14 @@ func newHTTPClient(proxyURL string) (*http.Client, error) {
 	return &http.Client{Transport: transport, Timeout: searchRequestTimeout}, nil
 }
 
-// GetUsage returns the current usage count for the given provider.
-func (m *Manager) GetUsage(ctx context.Context, providerType string) (int64, error) {
+// GetUsage returns the current usage count for the given provider key.
+// Counters are keyed per (provider type, API key) so multiple keys of the same
+// provider type each get their own quota.
+func (m *Manager) GetUsage(ctx context.Context, cfg ProviderConfig) (int64, error) {
 	if m.redis == nil {
 		return 0, nil
 	}
-	key := quotaRedisKey(providerType)
+	key := quotaRedisKey(cfg)
 	val, err := m.redis.Get(ctx, key).Int64()
 	if err == redis.Nil {
 		return 0, nil
@@ -437,23 +441,42 @@ func (m *Manager) GetUsage(ctx context.Context, providerType string) (int64, err
 	return val, err
 }
 
-// GetAllUsage returns usage for every configured provider.
-func (m *Manager) GetAllUsage(ctx context.Context) map[string]int64 {
-	result := make(map[string]int64, len(m.configs))
-	for _, cfg := range m.configs {
-		used, _ := m.GetUsage(ctx, cfg.Type)
-		result[cfg.Type] = used
-	}
-	return result
-}
-
-// ResetUsage deletes the Redis quota key for the given provider, resetting usage to 0.
+// ResetUsage deletes every Redis quota key for the given provider type
+// (all API keys of that type), resetting usage to 0.
 func (m *Manager) ResetUsage(ctx context.Context, providerType string) error {
 	if m.redis == nil {
 		return nil
 	}
-	key := quotaRedisKey(providerType)
-	return m.redis.Del(ctx, key).Err()
+	var keys []string
+	cursor := uint64(0)
+	for {
+		batch, next, err := m.redis.Scan(ctx, cursor, quotaKeyPrefix+providerType+"*", 100).Result()
+		if err != nil {
+			return err
+		}
+		keys = append(keys, batch...)
+		cursor = next
+		if cursor == 0 {
+			break
+		}
+	}
+	// Also drop the legacy pre-multi-key counter keyed by bare provider type.
+	keys = append(keys, quotaKeyPrefix+providerType)
+	if len(keys) == 0 {
+		return nil
+	}
+	return m.redis.Del(ctx, keys...).Err()
+}
+
+// ResetUsageForKey deletes the Redis quota counter of one specific provider key.
+func (m *Manager) ResetUsageForKey(ctx context.Context, providerType, keyHash string) error {
+	if m.redis == nil {
+		return nil
+	}
+	if keyHash == "" {
+		return m.ResetUsage(ctx, providerType)
+	}
+	return m.redis.Del(ctx, quotaKeyPrefix+providerType+":"+keyHash).Err()
 }
 
 // --- Provider factory ---
@@ -473,9 +496,23 @@ func (m *Manager) buildProvider(cfg ProviderConfig, client *http.Client) Provide
 
 // --- Redis key helpers ---
 
-func quotaRedisKey(providerType string) string {
-	return quotaKeyPrefix + providerType
+// quotaRedisKey keys the usage counter per (provider type, API key) so that
+// multiple keys of the same type each track their own quota. The API key is
+// not stored in Redis: only a short truncated SHA-1 of it is.
+func quotaRedisKey(cfg ProviderConfig) string {
+	return quotaKeyPrefix + cfg.Type + ":" + apiKeyHash(cfg.APIKey)
 }
+
+// apiKeyHash returns a short deterministic identifier of an API key
+// (8 hex chars) used to namespace its quota counter.
+func apiKeyHash(key string) string {
+	sum := sha1.Sum([]byte(key))
+	return hex.EncodeToString(sum[:4])
+}
+
+// APIKeyHash is the exported form of apiKeyHash, used by the service layer to
+// attach a stable per-key identifier to API responses (for per-key reset).
+func APIKeyHash(key string) string { return apiKeyHash(key) }
 
 // quotaTTLFromSubscription calculates the TTL for the quota counter based on
 // the provider's subscription start date. Quota resets monthly from that date.

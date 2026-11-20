@@ -512,9 +512,11 @@ func (h *SettingHandler) UpdateWebSearchEmulationConfig(c *gin.Context) {
 
 // ResetWebSearchUsage 重置指定 provider 的配额用量
 // POST /api/v1/admin/settings/web-search-emulation/reset-usage
+// 传 key_hash 时只重置对应单个 key 的计数，否则重置该类型全部 key。
 func (h *SettingHandler) ResetWebSearchUsage(c *gin.Context) {
 	var req struct {
 		ProviderType string `json:"provider_type"`
+		KeyHash      string `json:"key_hash"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, "Invalid request: "+err.Error())
@@ -524,7 +526,7 @@ func (h *SettingHandler) ResetWebSearchUsage(c *gin.Context) {
 		response.BadRequest(c, "provider_type is required")
 		return
 	}
-	if err := service.ResetWebSearchUsage(c.Request.Context(), req.ProviderType); err != nil {
+	if err := service.ResetWebSearchUsage(c.Request.Context(), req.ProviderType, req.KeyHash); err != nil {
 		response.ErrorFrom(c, err)
 		return
 	}

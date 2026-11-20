@@ -5915,14 +5915,32 @@
                     class="text-sm font-medium text-gray-700 dark:text-gray-300"
                   >
                     {{ t("admin.settings.webSearchEmulation.providers") }}
+                    <span
+                      class="ml-2 text-xs font-normal text-gray-400"
+                      >{{
+                        t("admin.settings.webSearchEmulation.multiKeyHint")
+                      }}</span
+                    >
                   </label>
-                  <button
-                    type="button"
-                    class="btn btn-secondary btn-sm"
-                    @click="addWebSearchProvider"
-                  >
-                    {{ t("admin.settings.webSearchEmulation.addProvider") }}
-                  </button>
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm"
+                      :disabled="webSearchUsageLoading"
+                      @click="refreshWebSearchUsage"
+                    >
+                      {{
+                        t("admin.settings.webSearchEmulation.refreshUsage")
+                      }}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm"
+                      @click="addWebSearchProvider"
+                    >
+                      {{ t("admin.settings.webSearchEmulation.addProvider") }}
+                    </button>
+                  </div>
                 </div>
 
                 <div
@@ -10274,6 +10292,7 @@ const wsTestQuery = ref("");
 const wsTestLoading = ref(false);
 const wsTestResult = ref<WebSearchTestResult | null>(null);
 const wsTestDialogOpen = ref(false);
+const webSearchUsageLoading = ref(false);
 
 function openTestDialog() {
   wsTestResult.value = null;
@@ -10345,6 +10364,7 @@ async function resetWebSearchUsage(idx: number) {
   try {
     await adminAPI.settings.resetWebSearchUsage({
       provider_type: provider.type,
+      key_hash: provider.key_hash,
     });
     provider.quota_used = 0;
     appStore.showSuccess(
@@ -10352,6 +10372,31 @@ async function resetWebSearchUsage(idx: number) {
     );
   } catch (err: unknown) {
     appStore.showError(extractApiErrorMessage(err, t("common.error")));
+  }
+}
+
+// 刷新各 Key 的剩余用量：按 key_hash 对齐服务端计数（网关自追踪口径）。
+async function refreshWebSearchUsage() {
+  if (webSearchUsageLoading.value) return;
+  webSearchUsageLoading.value = true;
+  try {
+    const resp = await adminAPI.settings.getWebSearchEmulationConfig();
+    const usageByHash = new Map<string, number>();
+    (resp?.providers || []).forEach((p) => {
+      if (p.key_hash) usageByHash.set(p.key_hash, p.quota_used ?? 0);
+    });
+    webSearchConfig.providers.forEach((p) => {
+      if (p.key_hash && usageByHash.has(p.key_hash)) {
+        p.quota_used = usageByHash.get(p.key_hash);
+      }
+    });
+    appStore.showSuccess(
+      t("admin.settings.webSearchEmulation.refreshUsageSuccess"),
+    );
+  } catch (err: unknown) {
+    appStore.showError(extractApiErrorMessage(err, t("common.error")));
+  } finally {
+    webSearchUsageLoading.value = false;
   }
 }
 
