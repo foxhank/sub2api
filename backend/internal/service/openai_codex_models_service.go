@@ -467,6 +467,27 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 		descriptor.MaxContextWindow = configuredCodexDeepSeekV4Context
 	}
 
+	if isGlmCodexModel(modelID) {
+		descriptor.DisplayName = glmCodexDisplayName(modelID)
+		descriptor.Description = "GLM coding and reasoning model routed through Sub2API."
+		descriptor.SupportsParallelToolCalls = true
+		if spec, ok := glmCodexModelSpecFor(modelID); ok {
+			descriptor.ContextWindow = spec.ContextWindow
+			descriptor.MaxContextWindow = spec.ContextWindow
+			if len(spec.Efforts) > 0 {
+				defaultReasoningLevel := glmCodexDefaultReasoningLevel(spec.Efforts)
+				descriptor.DefaultReasoningLevel = &defaultReasoningLevel
+				descriptor.SupportedReasoningLevels = make([]configuredCodexReasoningLevel, 0, len(spec.Efforts))
+				for _, effort := range spec.Efforts {
+					descriptor.SupportedReasoningLevels = append(descriptor.SupportedReasoningLevels, configuredCodexReasoningLevel{
+						Effort:      effort,
+						Description: configuredCodexReasoningLevelDescription(effort),
+					})
+				}
+			}
+		}
+	}
+
 	if isGrokCodexModel(modelID) {
 		descriptor.DisplayName = grokCodexDisplayName(modelID)
 		descriptor.Description = "Grok coding and reasoning model routed through Sub2API."
@@ -790,6 +811,82 @@ func deepSeekCodexDisplayName(modelID string) string {
 
 func isDeepSeekCodexModel(modelID string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelID)), "deepseek-")
+}
+
+// glmCodexModelSpecs bakes the zhipu GLM catalog from models.dev (provider
+// "zhipuai", captured 2026-11-21) into Codex descriptors: reasoning efforts,
+// context windows, and display names. Models without Efforts are toggle-only
+// thinkers; the upstream API exposes no effort levels for them, so they keep
+// the default "none" reasoning catalog.
+var glmCodexModelSpecs = map[string]glmCodexModelSpec{
+	"glm-4.5":        {DisplayName: "GLM-4.5", ContextWindow: 131_072},
+	"glm-4.5-air":    {DisplayName: "GLM-4.5-Air", ContextWindow: 131_072},
+	"glm-4.5-flash":  {DisplayName: "GLM-4.5-Flash", ContextWindow: 131_072},
+	"glm-4.5v":       {DisplayName: "GLM-4.5V", ContextWindow: 64_000},
+	"glm-4.6":        {DisplayName: "GLM-4.6", ContextWindow: 204_800},
+	"glm-4.6v":       {DisplayName: "GLM-4.6V", ContextWindow: 128_000},
+	"glm-4.6v-flash": {DisplayName: "GLM-4.6V-Flash", ContextWindow: 128_000},
+	"glm-4.7":        {DisplayName: "GLM-4.7", ContextWindow: 204_800},
+	"glm-4.7-flash":  {DisplayName: "GLM-4.7-Flash", ContextWindow: 200_000},
+	"glm-4.7-flashx": {DisplayName: "GLM-4.7-FlashX", ContextWindow: 200_000},
+	"glm-5":          {DisplayName: "GLM-5", ContextWindow: 204_800},
+	"glm-5.1":        {DisplayName: "GLM-5.1", ContextWindow: 200_000},
+	"glm-5.2":        {DisplayName: "GLM-5.2", ContextWindow: 1_000_000, Efforts: []string{"high", "max"}},
+	"glm-5.3":        {DisplayName: "GLM-5.3", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max"}},
+	"glm-5.3-flash":  {DisplayName: "GLM-5.3-Flash", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max"}},
+	"glm-5.3-flashx": {DisplayName: "GLM-5.3-FlashX", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max"}},
+	"glm-5v-turbo":   {DisplayName: "GLM-5V-Turbo", ContextWindow: 200_000},
+}
+
+type glmCodexModelSpec struct {
+	DisplayName   string
+	ContextWindow int64
+	Efforts       []string
+}
+
+func isGlmCodexModel(modelID string) bool {
+	return strings.HasPrefix(strings.ToLower(codexProviderQualifiedModelID(modelID)), "glm-")
+}
+
+// glmCodexModelSpecFor resolves a spec by exact ID first, then by the longest
+// matching table prefix so dated snapshot spellings (glm-5.3-flash-1107)
+// inherit their family spec.
+func glmCodexModelSpecFor(modelID string) (glmCodexModelSpec, bool) {
+	normalized := strings.ToLower(codexProviderQualifiedModelID(modelID))
+	if normalized == "" {
+		return glmCodexModelSpec{}, false
+	}
+	if spec, ok := glmCodexModelSpecs[normalized]; ok {
+		return spec, true
+	}
+	bestKey := ""
+	for key := range glmCodexModelSpecs {
+		if strings.HasPrefix(normalized, key) && len(key) > len(bestKey) {
+			bestKey = key
+		}
+	}
+	if bestKey == "" {
+		return glmCodexModelSpec{}, false
+	}
+	return glmCodexModelSpecs[bestKey], true
+}
+
+func glmCodexDisplayName(modelID string) string {
+	if spec, ok := glmCodexModelSpecFor(modelID); ok {
+		return spec.DisplayName
+	}
+	return strings.TrimSpace(modelID)
+}
+
+func glmCodexDefaultReasoningLevel(efforts []string) string {
+	for _, preferred := range []string{"high", "low"} {
+		for _, effort := range efforts {
+			if effort == preferred {
+				return effort
+			}
+		}
+	}
+	return efforts[0]
 }
 
 func isGrokCodexModel(modelID string) bool {

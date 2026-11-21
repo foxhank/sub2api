@@ -1414,6 +1414,81 @@ func TestBuildGroupConfiguredCodexModelsManifestIgnoresPersistentlyDisabledMappe
 	require.EqualValues(t, 1_000_000, models[0]["context_window"])
 }
 
+// Scenario: GLM 模型按 models.dev 智谱目录声明 effort 档位与上下文。
+func TestNewConfiguredCodexModelDescriptorGlm(t *testing.T) {
+	t.Parallel()
+
+	glm53Flash := newConfiguredCodexModelDescriptor("glm-5.3-flash")
+	require.Equal(t, "GLM-5.3-Flash", glm53Flash.DisplayName)
+	require.Equal(t, int64(1_000_000), glm53Flash.ContextWindow)
+	require.Equal(t, int64(1_000_000), glm53Flash.MaxContextWindow)
+	require.NotNil(t, glm53Flash.DefaultReasoningLevel)
+	require.Equal(t, "high", *glm53Flash.DefaultReasoningLevel)
+	require.Equal(t, []string{"low", "high", "max"}, effortsFromConfiguredCodexLevels(glm53Flash.SupportedReasoningLevels))
+	require.True(t, glm53Flash.SupportsParallelToolCalls)
+	require.NotContains(t, glm53Flash.SupportedReasoningLevels, configuredCodexReasoningLevel{Effort: "none"})
+
+	glm52 := newConfiguredCodexModelDescriptor("glm-5.2")
+	require.Equal(t, "GLM-5.2", glm52.DisplayName)
+	require.Equal(t, int64(1_000_000), glm52.ContextWindow)
+	require.Equal(t, []string{"high", "max"}, effortsFromConfiguredCodexLevels(glm52.SupportedReasoningLevels))
+	require.Equal(t, "high", *glm52.DefaultReasoningLevel)
+
+	// 日期后缀快照命名继承家族档位。
+	snapshot := newConfiguredCodexModelDescriptor("glm-5.3-flash-1107")
+	require.Equal(t, "GLM-5.3-Flash", snapshot.DisplayName)
+	require.Equal(t, []string{"low", "high", "max"}, effortsFromConfiguredCodexLevels(snapshot.SupportedReasoningLevels))
+
+	// 仅支持思考开关的型号没有 effort 档位，保留默认 none 目录。
+	toggleOnly := newConfiguredCodexModelDescriptor("glm-4.6")
+	require.Equal(t, "GLM-4.6", toggleOnly.DisplayName)
+	require.Equal(t, int64(204_800), toggleOnly.ContextWindow)
+	require.NotNil(t, toggleOnly.DefaultReasoningLevel)
+	require.Equal(t, "none", *toggleOnly.DefaultReasoningLevel)
+	require.Equal(t, []configuredCodexReasoningLevel{
+		{Effort: "none", Description: configuredCodexReasoningLevelDescription("none")},
+	}, toggleOnly.SupportedReasoningLevels)
+	require.True(t, toggleOnly.SupportsParallelToolCalls)
+
+	// 供应商限定名同样识别。
+	qualified := newConfiguredCodexModelDescriptor("zhipu/glm-5.3-flashx")
+	require.Equal(t, "GLM-5.3-FlashX", qualified.DisplayName)
+	require.Equal(t, []string{"low", "high", "max"}, effortsFromConfiguredCodexLevels(qualified.SupportedReasoningLevels))
+}
+
+// Scenario: 别名映射到 GLM 上游且账号无元数据快照时，别名条目按映射目标
+// 声明真实的 effort 档位与上下文，显示名保持公开别名。
+func TestBuildGroupConfiguredCodexModelsManifestGlmMappedAliasExposesUpstreamEfforts(t *testing.T) {
+	t.Parallel()
+
+	const groupID int64 = 81
+	account := Account{
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeAPIKey,
+		Credentials: map[string]any{
+			"model_mapping": map[string]any{
+				"gpt-5.5": "glm-5.3-flash",
+			},
+		},
+	}
+	svc := &OpenAIGatewayService{accountRepo: codexModelsVisibilityAccountRepo{
+		byGroup: map[int64][]Account{groupID: {account}},
+	}}
+	group := &Group{ID: groupID, Platform: PlatformOpenAI}
+
+	manifest, configured, err := svc.BuildGroupConfiguredCodexModelsManifest(context.Background(), group, "")
+	require.NoError(t, err)
+	require.True(t, configured)
+	models := decodeCodexManifestModels(t, manifest.Body)
+	require.Len(t, models, 1)
+	require.Equal(t, "gpt-5.5", models[0]["slug"])
+	require.Equal(t, "gpt-5.5", models[0]["display_name"])
+	require.Equal(t, configuredCodexCustomDescription, models[0]["description"])
+	require.Equal(t, "high", models[0]["default_reasoning_level"])
+	require.Equal(t, []string{"low", "high", "max"}, effortsFromManifestModel(t, models[0]))
+	require.EqualValues(t, 1_000_000, models[0]["context_window"])
+}
+
 // Scenario: 没有管理员模型配置时保留现有上游发现路径。
 func TestBuildGroupConfiguredCodexModelsManifestFallsThroughWithoutConfiguration(t *testing.T) {
 	t.Parallel()
