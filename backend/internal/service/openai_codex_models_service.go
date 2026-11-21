@@ -479,9 +479,15 @@ func newConfiguredCodexModelDescriptor(modelID string) configuredCodexModelDescr
 				descriptor.DefaultReasoningLevel = &defaultReasoningLevel
 				descriptor.SupportedReasoningLevels = make([]configuredCodexReasoningLevel, 0, len(spec.Efforts))
 				for _, effort := range spec.Efforts {
+					description := configuredCodexReasoningLevelDescription(effort)
+					if effort == "ultra" {
+						// Codex 把 Max/Ultra 归入二级菜单；GLM 上游没有原生 ultra，
+						// 该档由分组映射 ultra→max 兑现，描述如实说明等价关系。
+						description = "Top tier; routed to the model's maximum native effort"
+					}
 					descriptor.SupportedReasoningLevels = append(descriptor.SupportedReasoningLevels, configuredCodexReasoningLevel{
 						Effort:      effort,
-						Description: configuredCodexReasoningLevelDescription(effort),
+						Description: description,
 					})
 				}
 			}
@@ -817,7 +823,9 @@ func isDeepSeekCodexModel(modelID string) bool {
 // "zhipuai", captured 2026-11-21) into Codex descriptors: reasoning efforts,
 // context windows, and display names. Models without Efforts are toggle-only
 // thinkers; the upstream API exposes no effort levels for them, so they keep
-// the default "none" reasoning catalog.
+// the default "none" reasoning catalog. "ultra" is not a native zhipu effort —
+// it mirrors the GPT catalog's top tier and is honored by group ultra→max
+// mappings at request time.
 var glmCodexModelSpecs = map[string]glmCodexModelSpec{
 	"glm-4.5":        {DisplayName: "GLM-4.5", ContextWindow: 131_072},
 	"glm-4.5-air":    {DisplayName: "GLM-4.5-Air", ContextWindow: 131_072},
@@ -831,10 +839,10 @@ var glmCodexModelSpecs = map[string]glmCodexModelSpec{
 	"glm-4.7-flashx": {DisplayName: "GLM-4.7-FlashX", ContextWindow: 200_000},
 	"glm-5":          {DisplayName: "GLM-5", ContextWindow: 204_800},
 	"glm-5.1":        {DisplayName: "GLM-5.1", ContextWindow: 200_000},
-	"glm-5.2":        {DisplayName: "GLM-5.2", ContextWindow: 1_000_000, Efforts: []string{"high", "max"}},
-	"glm-5.3":        {DisplayName: "GLM-5.3", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max"}},
-	"glm-5.3-flash":  {DisplayName: "GLM-5.3-Flash", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max"}},
-	"glm-5.3-flashx": {DisplayName: "GLM-5.3-FlashX", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max"}},
+	"glm-5.2":        {DisplayName: "GLM-5.2", ContextWindow: 1_000_000, Efforts: []string{"high", "max", "ultra"}},
+	"glm-5.3":        {DisplayName: "GLM-5.3", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max", "ultra"}},
+	"glm-5.3-flash":  {DisplayName: "GLM-5.3-Flash", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max", "ultra"}},
+	"glm-5.3-flashx": {DisplayName: "GLM-5.3-FlashX", ContextWindow: 1_000_000, Efforts: []string{"low", "high", "max", "ultra"}},
 	"glm-5v-turbo":   {DisplayName: "GLM-5V-Turbo", ContextWindow: 200_000},
 }
 

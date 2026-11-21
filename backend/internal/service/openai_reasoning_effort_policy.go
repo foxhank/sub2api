@@ -25,7 +25,7 @@ const (
 	ReasoningEffortMappingDeny = "deny"
 )
 
-var openAIReasoningEffortValues = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+var openAIReasoningEffortValues = []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 var anthropicReasoningEffortValues = []string{"low", "medium", "high", "xhigh", "max"}
 
 func normalizeReasoningEffortMappingSource(raw string) string {
@@ -142,6 +142,10 @@ func NormalizeMaxReasoningEffort(raw string) string {
 	case "max", "ultracode":
 		// Claude Code 的 ultracode 顶级档位折叠进 max 槽位；未来新档名只需在此加别名。
 		return "max"
+	case "ultra":
+		// GPT 原生 Ultra（多智能体委派）保持独立档位：官方账号原样透传，
+		// 非 Ultra 上游（如 GLM）由分组映射 ultra→max 落到真实档位。
+		return "ultra"
 	default:
 		return ""
 	}
@@ -240,6 +244,8 @@ func reasoningEffortRank(raw string) (int, bool) {
 		return 5, true
 	case "max":
 		return 6, true
+	case "ultra":
+		return 7, true
 	default:
 		return 0, false
 	}

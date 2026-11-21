@@ -179,7 +179,7 @@ func TestNormalizeReasoningEffortMappings(t *testing.T) {
 			require.ErrorContains(t, err, "only supported for platforms")
 		}
 
-		_, err := NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "ultra", To: "high"}})
+		_, err := NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "banana", To: "high"}})
 		require.ErrorContains(t, err, "empty or unknown")
 	})
 
@@ -600,4 +600,55 @@ func TestReasoningEffortMappingDeniedError(t *testing.T) {
 	require.True(t, IsReasoningEffortPolicyDenied(&ReasoningEffortOverLimitError{Requested: "max", Max: "low"}))
 	require.False(t, IsReasoningEffortPolicyDenied(nil))
 	require.False(t, IsReasoningEffortPolicyDenied(context.Canceled))
+}
+
+func TestUltraReasoningEffortPolicy(t *testing.T) {
+	t.Parallel()
+
+	t.Run("ultra is a distinct first-class tier above max", func(t *testing.T) {
+		require.Equal(t, "ultra", NormalizeMaxReasoningEffort("Ultra"))
+		require.Equal(t, "max", NormalizeMaxReasoningEffort("ultracode"), "ultracode 仍折叠进 max")
+		rankUltra, okUltra := reasoningEffortRank("ultra")
+		rankMax, okMax := reasoningEffortRank("max")
+		require.True(t, okUltra)
+		require.True(t, okMax)
+		require.Greater(t, rankUltra, rankMax)
+	})
+
+	t.Run("mapping validates and rewrites ultra to max", func(t *testing.T) {
+		mappings, err := NormalizeReasoningEffortMappings(PlatformOpenAI, []ReasoningEffortMapping{{From: "ultra", To: "max"}})
+		require.NoError(t, err)
+		require.Equal(t, []ReasoningEffortMapping{{From: "ultra", To: "max"}}, mappings)
+
+		got, changed, err := ApplyOpenAIReasoningEffortPolicy([]byte(`{"reasoning":{"effort":"ultra"}}`), "", mappings, "")
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.JSONEq(t, `{"reasoning":{"effort":"max"}}`, string(got))
+	})
+
+	t.Run("ceiling max clamps ultra without mapping", func(t *testing.T) {
+		got, changed, err := ApplyOpenAIReasoningEffortPolicy([]byte(`{"reasoning":{"effort":"ultra"}}`), "max", nil, "")
+		require.NoError(t, err)
+		require.True(t, changed)
+		require.JSONEq(t, `{"reasoning":{"effort":"max"}}`, string(got))
+	})
+
+	t.Run("no ceiling and no mapping forwards ultra verbatim", func(t *testing.T) {
+		got, changed, err := ApplyOpenAIReasoningEffortPolicy([]byte(`{"reasoning":{"effort":"ultra"}}`), "", nil, "")
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.JSONEq(t, `{"reasoning":{"effort":"ultra"}}`, string(got))
+	})
+
+	t.Run("ultra ceiling admits max requests unchanged", func(t *testing.T) {
+		got, changed, err := ApplyOpenAIReasoningEffortPolicy([]byte(`{"reasoning":{"effort":"max"}}`), "ultra", nil, "")
+		require.NoError(t, err)
+		require.False(t, changed)
+		require.JSONEq(t, `{"reasoning":{"effort":"max"}}`, string(got))
+	})
+
+	t.Run("anthropic mapping rejects ultra source", func(t *testing.T) {
+		_, err := NormalizeReasoningEffortMappings(PlatformAnthropic, []ReasoningEffortMapping{{From: "ultra", To: "max"}})
+		require.Error(t, err)
+	})
 }

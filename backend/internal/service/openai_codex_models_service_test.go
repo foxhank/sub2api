@@ -1424,20 +1424,20 @@ func TestNewConfiguredCodexModelDescriptorGlm(t *testing.T) {
 	require.Equal(t, int64(1_000_000), glm53Flash.MaxContextWindow)
 	require.NotNil(t, glm53Flash.DefaultReasoningLevel)
 	require.Equal(t, "high", *glm53Flash.DefaultReasoningLevel)
-	require.Equal(t, []string{"low", "high", "max"}, effortsFromConfiguredCodexLevels(glm53Flash.SupportedReasoningLevels))
+	require.Equal(t, []string{"low", "high", "max", "ultra"}, effortsFromConfiguredCodexLevels(glm53Flash.SupportedReasoningLevels))
 	require.True(t, glm53Flash.SupportsParallelToolCalls)
 	require.NotContains(t, glm53Flash.SupportedReasoningLevels, configuredCodexReasoningLevel{Effort: "none"})
 
 	glm52 := newConfiguredCodexModelDescriptor("glm-5.2")
 	require.Equal(t, "GLM-5.2", glm52.DisplayName)
 	require.Equal(t, int64(1_000_000), glm52.ContextWindow)
-	require.Equal(t, []string{"high", "max"}, effortsFromConfiguredCodexLevels(glm52.SupportedReasoningLevels))
+	require.Equal(t, []string{"high", "max", "ultra"}, effortsFromConfiguredCodexLevels(glm52.SupportedReasoningLevels))
 	require.Equal(t, "high", *glm52.DefaultReasoningLevel)
 
 	// 日期后缀快照命名继承家族档位。
 	snapshot := newConfiguredCodexModelDescriptor("glm-5.3-flash-1107")
 	require.Equal(t, "GLM-5.3-Flash", snapshot.DisplayName)
-	require.Equal(t, []string{"low", "high", "max"}, effortsFromConfiguredCodexLevels(snapshot.SupportedReasoningLevels))
+	require.Equal(t, []string{"low", "high", "max", "ultra"}, effortsFromConfiguredCodexLevels(snapshot.SupportedReasoningLevels))
 
 	// 仅支持思考开关的型号没有 effort 档位，保留默认 none 目录。
 	toggleOnly := newConfiguredCodexModelDescriptor("glm-4.6")
@@ -1453,7 +1453,7 @@ func TestNewConfiguredCodexModelDescriptorGlm(t *testing.T) {
 	// 供应商限定名同样识别。
 	qualified := newConfiguredCodexModelDescriptor("zhipu/glm-5.3-flashx")
 	require.Equal(t, "GLM-5.3-FlashX", qualified.DisplayName)
-	require.Equal(t, []string{"low", "high", "max"}, effortsFromConfiguredCodexLevels(qualified.SupportedReasoningLevels))
+	require.Equal(t, []string{"low", "high", "max", "ultra"}, effortsFromConfiguredCodexLevels(qualified.SupportedReasoningLevels))
 }
 
 // Scenario: 别名映射到 GLM 上游且账号无元数据快照时，别名条目按映射目标
@@ -1485,7 +1485,7 @@ func TestBuildGroupConfiguredCodexModelsManifestGlmMappedAliasExposesUpstreamEff
 	require.Equal(t, "gpt-5.5", models[0]["display_name"])
 	require.Equal(t, configuredCodexCustomDescription, models[0]["description"])
 	require.Equal(t, "high", models[0]["default_reasoning_level"])
-	require.Equal(t, []string{"low", "high", "max"}, effortsFromManifestModel(t, models[0]))
+	require.Equal(t, []string{"low", "high", "max", "ultra"}, effortsFromManifestModel(t, models[0]))
 	require.EqualValues(t, 1_000_000, models[0]["context_window"])
 }
 
